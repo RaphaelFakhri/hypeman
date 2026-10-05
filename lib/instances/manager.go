@@ -179,6 +179,8 @@ type manager struct {
 	macOSOnly                 bool
 	bootMarkerScans           sync.Map      // map[string]time.Time next allowed boot-marker rescan
 	hypervisorStateCache      sync.Map      // map[string]hypervisorStateCacheEntry - last observed hypervisor state per instance
+	hypervisorStateQueryLocks sync.Map      // map[string]*instanceStateQueryLock - serializes state probes against snapshots
+	hypervisorStateQueries    sync.Map      // map[string]*hypervisorStateQueryFlight
 	hostTopology              *HostTopology // Cached host CPU topology
 	metrics                   *Metrics
 	meter                     metric.Meter
@@ -362,6 +364,7 @@ func (m *manager) notifyLifecycleEvent(ctx context.Context, action LifecycleEven
 
 func (m *manager) notifyLifecycleDelete(ctx context.Context, instanceID string) {
 	m.invalidateCachedHypervisorState(instanceID)
+	m.hypervisorStateQueryLocks.Delete(instanceID)
 	m.lifecycleEvents.Notify(ctx, LifecycleEvent{
 		Action:     LifecycleEventDelete,
 		InstanceID: instanceID,
