@@ -199,10 +199,19 @@ func (m *manager) CreateImage(ctx context.Context, req CreateImageRequest) (*Ima
 		// explicit --platform) and a ref pinned to the resolved child digest. The
 		// resolve goes through the ManifestInspector seam, symmetric with the tag
 		// path below, so it stays fake-testable.
+		//
+		// A manifest already in the local OCI cache (pushed to the built-in
+		// registry, or pulled before retention reclaimed its converted disk) is
+		// resolved from the cache: a push to builds/<id> normalizes to
+		// docker.io/builds/<id>, which no remote registry can serve.
 		var actual Platform
-		actual, ref, err = normalized.ResolveDigest(resolveCtx, inspector, platform.ToGCR())
-		if err != nil {
-			return nil, fmt.Errorf("resolve digest manifest: %w", err)
+		if cached, ok := m.ociClient.cachedImagePlatform(normalized.Digest()); ok {
+			actual, ref = cached, NewResolvedRef(normalized, normalized.Digest())
+		} else {
+			actual, ref, err = normalized.ResolveDigest(resolveCtx, inspector, platform.ToGCR())
+			if err != nil {
+				return nil, fmt.Errorf("resolve digest manifest: %w", err)
+			}
 		}
 		if err := validateDigestPlatform(req.Platform, platform, actual); err != nil {
 			return nil, err

@@ -387,6 +387,25 @@ func imageByAnnotation(path layout.Path, layoutTag string) (gcr.Image, error) {
 	return nil, fmt.Errorf("no image found with tag %s", layoutTag)
 }
 
+// cachedImagePlatform returns the platform of the image manifest with the
+// given digest when it is present in the OCI layout. Index digests are never
+// matched: the layout is keyed by image manifest digest.
+func (c *ociClient) cachedImagePlatform(digest string) (Platform, bool) {
+	path, err := layout.FromPath(c.cacheDir)
+	if err != nil {
+		return Platform{}, false
+	}
+	img, err := imageByAnnotation(path, digestToLayoutTag(digest))
+	if err != nil {
+		return Platform{}, false
+	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return Platform{}, false
+	}
+	return Platform{OS: cfg.OS, Architecture: cfg.Architecture, Variant: cfg.Variant}.Normalize(), true
+}
+
 // extractOCIImageBundle reads metadata, the manifest content model, and layer
 // stats from the cached OCI layout. Uses go-containerregistry which handles
 // both Docker v2 and OCI v1 manifests.

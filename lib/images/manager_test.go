@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/layout"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/kernel/hypeman/lib/paths"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -786,4 +787,47 @@ func waitForReady(t *testing.T, mgr Manager, ctx context.Context, imageName stri
 	}
 
 	t.Fatal("Build did not complete within 60 seconds")
+}
+
+// TestCreateImageDigestPinnedFromOCICache covers a digest-pinned create for an
+// image that is only in the local OCI cache, such as a registry push to
+// builds/<id> whose converted disk was reclaimed by retention. The ref
+// normalizes to docker.io/builds/<id>, so remote resolution could never
+// succeed; the cache must be used instead.
+func TestCreateImageDigestPinnedFromOCICache(t *testing.T) {
+	dataDir := t.TempDir()
+	p := paths.New(dataDir)
+	mgr, err := NewManager(p, 1, nil)
+	require.NoError(t, err)
+
+	img := createTestDockerImage(t)
+	cfg, err := img.ConfigFile()
+	require.NoError(t, err)
+	cfg = cfg.DeepCopy()
+	cfg.OS, cfg.Architecture = "linux", "amd64"
+	img, err = mutate.ConfigFile(img, cfg)
+	require.NoError(t, err)
+	imgDigest, err := img.Digest()
+	require.NoError(t, err)
+	digestStr := imgDigest.String()
+
+	cacheDir := p.SystemOCICache()
+	require.NoError(t, os.MkdirAll(cacheDir, 0755))
+	path, err := layout.Write(cacheDir, empty.Index)
+	require.NoError(t, err)
+	require.NoError(t, path.AppendImage(img, layout.WithAnnotations(map[string]string{
+		"org.opencontainers.image.ref.name": digestToLayoutTag(digestStr),
+	})))
+
+	ctx := context.Background()
+	name := "builds/abc123@" + digestStr
+
+	_, err = mgr.CreateImage(ctx, CreateImageRequest{Name: name, Platform: "linux/arm64"})
+	require.ErrorIs(t, err, ErrInvalidPlatform)
+
+	created, err := mgr.CreateImage(ctx, CreateImageRequest{Name: name})
+	require.NoError(t, err)
+	require.Equal(t, digestStr, created.Digest)
+	require.Equal(t, "docker.io/"+name, created.Name)
+	waitForReady(t, mgr, ctx, created.Name)
 }
