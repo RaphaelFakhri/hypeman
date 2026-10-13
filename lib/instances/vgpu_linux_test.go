@@ -235,7 +235,7 @@ func TestVGPUClaimRepairSkipsClaimedVFs(t *testing.T) {
 			return devices.VGPUFrameworkVendorVFIO, vfs, nil
 		},
 		vendorVFIOProfiles: func([]devices.VirtualFunction) (map[string][]devices.VGPUProfileType, error) {
-			return map[string][]devices.VGPUProfileType{}, nil
+			return map[string][]devices.VGPUProfileType{"0000:82:00.4": {}}, nil
 		},
 		destroyVGPU: func(context.Context, devices.VGPUAssignment) error {
 			t.Fatal("must not reset a VF claimed by another instance")
@@ -249,7 +249,7 @@ func TestVGPUClaimRepairSkipsClaimedVFs(t *testing.T) {
 	meta := saveTestVGPUInstance(t, m, "new")
 
 	_, err := m.claimVGPU(context.Background(), meta, testVGPUProfile)
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInsufficientResources)
 }
 
 func TestVGPUCrashAfterClaimIsReconciled(t *testing.T) {
