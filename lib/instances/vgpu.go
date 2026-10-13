@@ -134,13 +134,22 @@ func (m *manager) claimVGPU(ctx context.Context, meta *metadata, profileName str
 
 // checkVGPUCapacity returns ErrInsufficientResources when no VF can take
 // profileName, so create and start refuse a full host before allocating
-// anything else. It runs the claim's placement on a snapshot without
-// claiming. A dirty unclaimed VF may be hiding capacity the claim can
-// reclaim by resetting it, so its presence admits the request. Errors
-// reading host state also admit it; the claim reports them.
+// anything else. It runs the claim's placement without claiming, under the
+// allocation lock so it reads the same host state a claim starting now
+// would. A dirty unclaimed VF may be hiding capacity the claim can reclaim
+// by resetting it, so its presence admits the request. Errors reading host
+// state also admit it; the claim reports them.
 func (m *manager) checkVGPUCapacity(profileName string) error {
-	framework, vfs, err := m.discoverVGPUDevices()
+	framework, _, err := m.discoverVGPUDevices()
 	if err != nil || framework != devices.VGPUFrameworkVendorVFIO {
+		return nil
+	}
+
+	m.vgpuAllocationMu.Lock()
+	defer m.vgpuAllocationMu.Unlock()
+
+	_, vfs, err := m.discoverVGPUDevices()
+	if err != nil {
 		return nil
 	}
 	allMetadata, err := m.listMetadataForReconcile()
