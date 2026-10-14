@@ -9,6 +9,10 @@ import (
 	"github.com/kernel/hypeman/lib/hypervisor"
 )
 
+// microVMFirmware is the firmware file microvm guests boot with. It is
+// resolved against QEMU's firmware search path at launch.
+const microVMFirmware = "qboot.rom"
+
 // BuildArgs converts hypervisor.VMConfig to command-line arguments for standard
 // QEMU. Backend starters use buildArgs with their private machine profile.
 func BuildArgs(cfg hypervisor.VMConfig) []string {
@@ -29,6 +33,11 @@ func buildArgs(cfg hypervisor.VMConfig, machine MachineType) []string {
 		// Do not allow a host qemu.conf to add devices outside microvm's
 		// documented eight virtio-mmio-device limit.
 		args = append(args, "-no-user-config")
+		// Pin the firmware instead of accepting whatever the distro's
+		// bios-microvm.bin resolves to: with SeaBIOS there, guests
+		// intermittently crash before the serial console comes up, while
+		// qboot boots them reliably.
+		args = append(args, "-bios", microVMFirmware)
 	}
 
 	// CPU configuration
