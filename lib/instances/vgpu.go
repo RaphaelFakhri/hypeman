@@ -94,10 +94,12 @@ func (m *manager) claimVGPU(ctx context.Context, meta *metadata, profileName str
 	// refuses its reset is dropped from the candidates so it cannot block
 	// clean siblings.
 	//
-	// When no VF on the chosen GPU advertises the profile, only the driver can
-	// say whether a placement remains, so the VF is configured here and the
-	// next GPU is tried if the driver rejects the type. Every reselection
-	// passes through the dirty-VF reset again.
+	// The VF is then configured here, under the allocation lock, so a claim
+	// cannot lose its placement to a later claim once the lock is released.
+	// Creatable lists are a snapshot and hide some profiles that still fit,
+	// so only the driver can say whether a placement remains; the next GPU is
+	// tried if it rejects the type. Every reselection passes through the
+	// dirty-VF reset again.
 	log := logger.FromContext(ctx)
 	for {
 		vf, ok := vfByAddress(candidates.vfs, vfAddress)
@@ -119,21 +121,20 @@ func (m *manager) claimVGPU(ctx context.Context, meta *metadata, profileName str
 			}
 			log.InfoContext(ctx, "reset dirty vGPU VF before claim", "vf", vf.PCIAddress)
 		}
-		if advertisingGPUs(candidates, profileType)[vf.ParentGPU] {
+		placeErr := m.placeVGPU(ctx, candidates.vfs, allMetadata, vf, profileType)
+		if placeErr == nil {
+			if !advertisingGPUs(candidates, profileType)[vf.ParentGPU] {
+				log.InfoContext(ctx, "placed vGPU profile its GPU no longer advertises", "vf", vfAddress, "profile", profileName)
+			}
 			break
 		}
-		probeErr := m.placeHiddenVGPU(ctx, candidates.vfs, allMetadata, vf, profileType)
-		if probeErr == nil {
-			log.InfoContext(ctx, "placed vGPU profile its GPU no longer advertises", "vf", vfAddress, "profile", profileName)
-			break
+		if !errors.Is(placeErr, devices.ErrVGPUTypeRejected) {
+			return nil, placeErr
 		}
-		if !errors.Is(probeErr, devices.ErrVGPUTypeRejected) {
-			return nil, probeErr
-		}
-		log.InfoContext(ctx, "driver refused vGPU profile on GPU; trying another GPU", "gpu", vf.ParentGPU, "vf", vfAddress, "profile", profileName, "error", probeErr)
+		log.InfoContext(ctx, "driver refused vGPU profile on GPU; trying another GPU", "gpu", vf.ParentGPU, "vf", vfAddress, "profile", profileName, "error", placeErr)
 		candidates.vfs = withoutGPU(candidates.vfs, vf.ParentGPU)
 		if vfAddress, profileType, err = selectVendorVFIOVF(candidates, profileName, m.pickVFIndex); err != nil {
-			return nil, fmt.Errorf("%w (driver refused it on GPU %s: %v)", err, vf.ParentGPU, probeErr)
+			return nil, fmt.Errorf("%w (driver refused it on GPU %s: %v)", err, vf.ParentGPU, placeErr)
 		}
 	}
 	device := &devices.VGPUDevice{
@@ -151,6 +152,9 @@ func (m *manager) claimVGPU(ctx context.Context, meta *metadata, profileName str
 	meta.GPUClaimedAt = &claimedAt
 	if err := m.saveMetadata(meta); err != nil {
 		clearStoredVGPUDevice(&meta.StoredMetadata)
+		if resetErr := m.destroyVGPUAssignment(ctx, devices.VGPUAssignment{Framework: device.Framework, DevicePath: device.SysfsPath}); resetErr != nil {
+			log.WarnContext(ctx, "failed to reset vGPU VF after claim save failed", "vf", vfAddress, "error", resetErr)
+		}
 		return nil, fmt.Errorf("save vGPU claim: %w", err)
 	}
 	return device, nil
@@ -190,13 +194,13 @@ func (m *manager) resetDirtyUnclaimedVFs(ctx context.Context, vfs []devices.Virt
 	return reset
 }
 
-// placeHiddenVGPU configures vf with a profile its GPU no longer advertises,
-// so the driver decides whether a placement remains. An unclaimed dirty
-// sibling can hold the last placement, so when the driver rejects the type,
-// those siblings are reset (in-use gated) and the write is retried once. A VF
-// left configured by a claim that fails afterwards is such a sibling for the
-// next allocation. Callers must hold vgpuAllocationMu.
-func (m *manager) placeHiddenVGPU(ctx context.Context, vfs []devices.VirtualFunction, allMetadata []StoredMetadata, vf devices.VirtualFunction, profileType string) error {
+// placeVGPU configures vf with profileType, so the driver decides whether a
+// placement remains. An unclaimed dirty sibling can hold the last placement,
+// so when the driver rejects the type, those siblings are reset (in-use
+// gated) and the write is retried once. A VF left configured by a crash before
+// its claim was saved is such a sibling for the next allocation. Callers must
+// hold vgpuAllocationMu.
+func (m *manager) placeVGPU(ctx context.Context, vfs []devices.VirtualFunction, allMetadata []StoredMetadata, vf devices.VirtualFunction, profileType string) error {
 	device := &devices.VGPUDevice{
 		Framework:   devices.VGPUFrameworkVendorVFIO,
 		VFAddress:   vf.PCIAddress,
