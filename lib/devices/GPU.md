@@ -106,6 +106,8 @@ before the hypervisor is signalled.
 
 Hypeman reconciles metadata claims once at startup and every minute afterward, skipping hosts without GPUs. A claim whose VMM is confirmed dead is reset before the claim is removed. An ambiguous hypervisor ownership check preserves the claim, logs a warning, and increments `hypeman_instances_vgpu_liveness_uncertain_total`; the create and start cleanup paths preserve and count the same way. mdev hosts also sweep orphaned device-level assignments. Vendor VFIO hosts repair an unclaimed dirty VF when the allocator next selects it; repair checks for open VFIO handles before resetting `current_vgpu_type`. The allocator prefers VFs that are already clean, and a dirty VF that refuses its reset is skipped in favor of another candidate.
 
+In mixed-size (heterogeneous) mode, `creatable_vgpu_types` under-reports. The driver drops a profile from every VF's list once its GPU holds as many vGPUs as that profile's equal-size instance limit (12 for L40S-4Q), even while a placement for it remains, and still accepts a `current_vgpu_type` write for it. The allocator remembers every profile each GPU has advertised. When no GPU advertises the requested profile, it writes the profile to a clean VF on each GPU that supports it, under the allocation lock, until the driver accepts one. GPUs that advertise the profile are always tried first. A GPU whose VFs advertise nothing has no placement left for any size and is skipped.
+
 ### Hypervisor Support
 
 Hypervisor selection for vGPU instances is caller policy; hypeman does not enforce it. In practice **QEMU is the only hypervisor with working vGPU support**:

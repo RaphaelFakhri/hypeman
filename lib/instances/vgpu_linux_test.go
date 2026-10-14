@@ -315,3 +315,95 @@ func TestVGPUClaimFallsBackWhenDirtyVFRefusesReset(t *testing.T) {
 	assert.Equal(t, "0000:82:00.5", device.VFAddress)
 	assert.Equal(t, []string{testVFDevicePath, "/sys/bus/pci/devices/0000:82:00.5"}, resets)
 }
+
+// newHiddenProfileManager returns a manager on a two-GPU host whose free VFs
+// advertise both profiles until hide4Q is set, after which they advertise
+// only 2Q, as the driver does once a GPU holds 12 vGPUs.
+func newHiddenProfileManager(t *testing.T, hide4Q *bool) *manager {
+	t.Helper()
+	vfs := []devices.VirtualFunction{
+		{PCIAddress: "0000:82:00.4", ParentGPU: "0000:82:00.0"},
+		{PCIAddress: "0000:82:00.5", ParentGPU: "0000:82:00.0"},
+		{PCIAddress: "0000:e3:00.4", ParentGPU: "0000:e3:00.0"},
+	}
+	return &manager{
+		paths: paths.New(t.TempDir()),
+		discoverVGPU: func() (devices.VGPUFramework, []devices.VirtualFunction, error) {
+			return devices.VGPUFrameworkVendorVFIO, vfs, nil
+		},
+		vendorVFIOProfiles: func([]devices.VirtualFunction) (map[string][]devices.VGPUProfileType, error) {
+			profiles := make(map[string][]devices.VGPUProfileType, len(vfs))
+			for _, vf := range vfs {
+				profiles[vf.PCIAddress] = []devices.VGPUProfileType{testSmallProfile}
+				if !*hide4Q {
+					profiles[vf.PCIAddress] = append(profiles[vf.PCIAddress], testLargeProfile)
+				}
+			}
+			return profiles, nil
+		},
+		pickVFIndex: pickFirst,
+	}
+}
+
+func TestVGPUClaimPlacesProfileItsGPUHides(t *testing.T) {
+	hide4Q := false
+	m := newHiddenProfileManager(t, &hide4Q)
+	var configured []string
+	m.configureVGPU = func(_ context.Context, vfAddress, profileType string) error {
+		configured = append(configured, vfAddress+"="+profileType)
+		return nil
+	}
+	// An earlier claim on the idle host records that both GPUs support 4Q.
+	_, err := m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "earlier"), testVGPUProfile)
+	require.NoError(t, err)
+	require.Empty(t, configured, "an advertised profile is configured by the caller, not the claim")
+
+	hide4Q = true
+	meta := saveTestVGPUInstance(t, m, "large")
+	device, err := m.claimVGPU(context.Background(), meta, testLargeVGPUProfile)
+	require.NoError(t, err)
+	assert.Equal(t, "0000:e3:00.4", device.VFAddress)
+	assert.Equal(t, testLargeProfileType, device.ProfileType)
+	assert.Equal(t, []string{"0000:e3:00.4=" + testLargeProfileType}, configured)
+	stored, err := m.loadMetadata("large")
+	require.NoError(t, err)
+	assert.Equal(t, "/sys/bus/pci/devices/0000:e3:00.4", stored.GPUDevicePath)
+}
+
+func TestVGPUClaimTriesNextGPUWhenDriverRefusesHiddenProfile(t *testing.T) {
+	hide4Q := true
+	m := newHiddenProfileManager(t, &hide4Q)
+	m.supportedVGPUProfiles = testSupported("0000:82:00.0", "0000:e3:00.0")
+	var configured []string
+	m.configureVGPU = func(_ context.Context, vfAddress, profileType string) error {
+		configured = append(configured, vfAddress)
+		if vfAddress == "0000:82:00.4" {
+			return errors.New("configure vGPU on VF 0000:82:00.4: invalid argument")
+		}
+		return nil
+	}
+
+	device, err := m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "large"), testLargeVGPUProfile)
+	require.NoError(t, err)
+	assert.Equal(t, "0000:e3:00.4", device.VFAddress)
+	assert.Equal(t, []string{"0000:82:00.4", "0000:e3:00.4"}, configured, "a refusal rules out the whole GPU, not just the VF")
+}
+
+func TestVGPUClaimFailsWhenDriverRefusesHiddenProfileEverywhere(t *testing.T) {
+	hide4Q := true
+	m := newHiddenProfileManager(t, &hide4Q)
+	m.supportedVGPUProfiles = testSupported("0000:82:00.0", "0000:e3:00.0")
+	var configured []string
+	m.configureVGPU = func(_ context.Context, vfAddress, _ string) error {
+		configured = append(configured, vfAddress)
+		return errors.New("invalid argument")
+	}
+
+	_, err := m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "large"), testLargeVGPUProfile)
+	require.ErrorContains(t, err, "is not creatable on any VF")
+	require.ErrorContains(t, err, "driver refused it")
+	assert.Equal(t, []string{"0000:82:00.4", "0000:e3:00.4"}, configured)
+	stored, loadErr := m.loadMetadata("large")
+	require.NoError(t, loadErr)
+	assert.Empty(t, stored.GPUDevicePath)
+}
