@@ -104,7 +104,7 @@ func (m *manager) claimVGPU(ctx context.Context, meta *metadata, profileName str
 	for {
 		vf, ok := vfByAddress(candidates.vfs, vfAddress)
 		if !ok {
-			break
+			return nil, fmt.Errorf("selected VF %s is not a candidate", vfAddress)
 		}
 		if vf.Allocated {
 			assignment := devices.VGPUAssignment{
@@ -132,6 +132,7 @@ func (m *manager) claimVGPU(ctx context.Context, meta *metadata, profileName str
 			return nil, placeErr
 		}
 		log.InfoContext(ctx, "driver refused vGPU profile on GPU; trying another GPU", "gpu", vf.ParentGPU, "vf", vfAddress, "profile", profileName, "error", placeErr)
+		m.recordVGPUDriverRejection(ctx, vf.ParentGPU)
 		candidates.vfs = withoutGPU(candidates.vfs, vf.ParentGPU)
 		if vfAddress, profileType, err = selectVendorVFIOVF(candidates, profileName, m.pickVFIndex); err != nil {
 			return nil, fmt.Errorf("%w (driver refused it on GPU %s: %v)", err, vf.ParentGPU, placeErr)
@@ -272,14 +273,21 @@ func selectVendorVFIOVF(c vendorVFIOCandidates, profileName string, pick func(n 
 			profilesByName[name] = profile
 		}
 	}
-	advertisedNames := make(map[string]struct{})
 	advertises := make(map[string]map[string]struct{}, len(c.profilesByVF))
 	for vfAddress, profiles := range c.profilesByVF {
 		advertises[vfAddress] = make(map[string]struct{}, len(profiles))
 		for _, profile := range profiles {
 			profilesByName[profile.Name] = profile
-			advertisedNames[profile.Name] = struct{}{}
 			advertises[vfAddress][profile.TypeName] = struct{}{}
+		}
+	}
+	// Only VFs still in c.vfs count as advertising, so a profile whose
+	// advertising GPUs were all dropped after a driver rejection reports as
+	// not creatable.
+	advertisedNames := make(map[string]struct{})
+	for _, vf := range c.vfs {
+		for _, profile := range c.profilesByVF[vf.PCIAddress] {
+			advertisedNames[profile.Name] = struct{}{}
 		}
 	}
 	notCreatable := func() error {

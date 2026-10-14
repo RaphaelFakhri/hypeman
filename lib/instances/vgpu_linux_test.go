@@ -413,6 +413,24 @@ func TestVGPUClaimFailsWhenDriverRefusesHiddenProfileEverywhere(t *testing.T) {
 	assert.Empty(t, stored.GPUDevicePath)
 }
 
+func TestVGPUClaimFailsWhenDriverRefusesAdvertisedProfileEverywhere(t *testing.T) {
+	vfs := []devices.VirtualFunction{
+		{PCIAddress: "0000:82:00.4", ParentGPU: "0000:82:00.0"},
+		{PCIAddress: "0000:e3:00.4", ParentGPU: "0000:e3:00.0"},
+	}
+	m := newVGPUAllocationManager(t, vfs)
+	var configured []string
+	m.configureVGPU = func(_ context.Context, vfAddress, _ string) error {
+		configured = append(configured, vfAddress)
+		return errDriverRejected(vfAddress)
+	}
+
+	_, err := m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "new"), testVGPUProfile)
+	require.ErrorContains(t, err, "is not creatable on any VF")
+	require.ErrorContains(t, err, "driver refused it")
+	assert.Len(t, configured, 2)
+}
+
 func TestVGPUClaimFailsOnHiddenProfileConfigureErrorOtherThanRejection(t *testing.T) {
 	hide4Q := true
 	m := newHiddenProfileManager(t, &hide4Q)
