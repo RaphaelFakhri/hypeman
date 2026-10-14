@@ -336,6 +336,57 @@ func TestSelectVendorVFIOVFOffersHiddenProfileOnlyWhereSupported(t *testing.T) {
 	assert.Equal(t, "0000:e3:00.5", vf)
 }
 
+func TestSelectVendorVFIOVFSkipsUnreadableVFForHiddenProfile(t *testing.T) {
+	// VF .4's creatable types could not be read, so it is absent from the
+	// listing. Its readable sibling says the GPU still has placements, but
+	// that says nothing about the unreadable VF itself.
+	vfs := []devices.VirtualFunction{
+		{PCIAddress: "0000:82:00.4", ParentGPU: "0000:82:00.0"},
+		{PCIAddress: "0000:82:00.5", ParentGPU: "0000:82:00.0"},
+	}
+	vf, _, err := selectVendorVFIOVF(vendorVFIOCandidates{
+		vfs:          vfs,
+		profilesByVF: testVFProfiles("0000:82:00.5"),
+		supported:    testSupported("0000:82:00.0"),
+	}, testLargeVGPUProfile, pickFirst)
+	require.NoError(t, err)
+	assert.Equal(t, "0000:82:00.5", vf)
+}
+
+func TestSelectVendorVFIOVFCountsHiddenProfileClaimsAsKnownLoad(t *testing.T) {
+	// GPU 82 runs one 4Q that no VF advertises any more; GPU e3 runs three
+	// 2Q. The remembered 4Q makes 82's load known and lighter (4 GB vs 6 GB),
+	// instead of ranking 82 last for unknown load.
+	vfs := []devices.VirtualFunction{
+		{PCIAddress: "0000:82:00.4", ParentGPU: "0000:82:00.0", Allocated: true, ProfileType: testLargeProfileType},
+		{PCIAddress: "0000:82:00.5", ParentGPU: "0000:82:00.0"},
+		{PCIAddress: "0000:e3:00.4", ParentGPU: "0000:e3:00.0", Allocated: true, ProfileType: testVFProfileType},
+		{PCIAddress: "0000:e3:00.5", ParentGPU: "0000:e3:00.0", Allocated: true, ProfileType: testVFProfileType},
+		{PCIAddress: "0000:e3:00.6", ParentGPU: "0000:e3:00.0", Allocated: true, ProfileType: testVFProfileType},
+		{PCIAddress: "0000:e3:00.7", ParentGPU: "0000:e3:00.0"},
+	}
+	c := vendorVFIOCandidates{
+		vfs:          vfs,
+		profilesByVF: testVFProfiles("0000:82:00.5", "0000:e3:00.7"),
+		supported:    testSupported("0000:82:00.0", "0000:e3:00.0"),
+		claims: []StoredMetadata{
+			{GPUProfile: testLargeVGPUProfile, GPUDevicePath: testVFDevicePath},
+			{GPUProfile: testVGPUProfile, GPUDevicePath: "/sys/bus/pci/devices/0000:e3:00.4"},
+			{GPUProfile: testVGPUProfile, GPUDevicePath: "/sys/bus/pci/devices/0000:e3:00.5"},
+			{GPUProfile: testVGPUProfile, GPUDevicePath: "/sys/bus/pci/devices/0000:e3:00.6"},
+		},
+	}
+
+	vf, _, err := selectVendorVFIOVF(c, testVGPUProfile, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "0000:82:00.5", vf)
+
+	c.supported = nil
+	vf, _, err = selectVendorVFIOVF(c, testVGPUProfile, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "0000:e3:00.7", vf, "without the remembered profile 82's load is unknown")
+}
+
 func TestSelectVendorVFIOVFSkipsGPUThatAdvertisesNothing(t *testing.T) {
 	// A free VF that advertises no profile at all means the GPU has no
 	// placement left for any size, so it is not worth asking the driver.

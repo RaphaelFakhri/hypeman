@@ -2,6 +2,7 @@ package instances
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"path/filepath"
@@ -80,6 +81,7 @@ func (m *manager) claimVGPU(ctx context.Context, meta *metadata, profileName str
 		if candidates.profilesByVF, err = listProfiles(vfs); err != nil {
 			return nil, err
 		}
+		m.rememberVGPUProfiles(vfs, candidates.profilesByVF)
 		candidates.vfs = vfs
 		if vfAddress, profileType, err = selectVendorVFIOVF(candidates, profileName, m.pickVFIndex); err != nil {
 			return nil, err
@@ -91,45 +93,42 @@ func (m *manager) claimVGPU(ctx context.Context, meta *metadata, profileName str
 	// claiming; the allocation lock keeps it unclaimed until then. A VF that
 	// refuses its reset is dropped from the candidates so it cannot block
 	// clean siblings.
+	//
+	// When no VF on the chosen GPU advertises the profile, only the driver can
+	// say whether a placement remains, so the VF is configured here and the
+	// next GPU is tried if the driver rejects the type. Every reselection
+	// passes through the dirty-VF reset again.
 	log := logger.FromContext(ctx)
 	for {
 		vf, ok := vfByAddress(candidates.vfs, vfAddress)
-		if !ok || !vf.Allocated {
+		if !ok {
 			break
 		}
-		assignment := devices.VGPUAssignment{
-			Framework:  devices.VGPUFrameworkVendorVFIO,
-			DevicePath: filepath.Clean(devices.GetDeviceSysfsPath(vf.PCIAddress)),
-		}
-		repairErr := m.destroyVGPUAssignment(ctx, assignment)
-		if repairErr == nil {
+		if vf.Allocated {
+			assignment := devices.VGPUAssignment{
+				Framework:  devices.VGPUFrameworkVendorVFIO,
+				DevicePath: filepath.Clean(devices.GetDeviceSysfsPath(vf.PCIAddress)),
+			}
+			if repairErr := m.destroyVGPUAssignment(ctx, assignment); repairErr != nil {
+				log.WarnContext(ctx, "dirty vGPU VF refused reset; trying another VF", "vf", vf.PCIAddress, "error", repairErr)
+				candidates.vfs = withoutVF(candidates.vfs, vf.PCIAddress)
+				if vfAddress, profileType, err = selectVendorVFIOVF(candidates, profileName, m.pickVFIndex); err != nil {
+					return nil, fmt.Errorf("repair dirty VF %s before claim: %w", vf.PCIAddress, repairErr)
+				}
+				continue
+			}
 			log.InfoContext(ctx, "reset dirty vGPU VF before claim", "vf", vf.PCIAddress)
+		}
+		if advertisingGPUs(candidates, profileType)[vf.ParentGPU] {
 			break
 		}
-		log.WarnContext(ctx, "dirty vGPU VF refused reset; trying another VF", "vf", vf.PCIAddress, "error", repairErr)
-		candidates.vfs = withoutVF(candidates.vfs, vf.PCIAddress)
-		if vfAddress, profileType, err = selectVendorVFIOVF(candidates, profileName, m.pickVFIndex); err != nil {
-			return nil, fmt.Errorf("repair dirty VF %s before claim: %w", vf.PCIAddress, repairErr)
-		}
-	}
-	// No VF on the chosen GPU advertises the profile, so only the driver can
-	// say whether a placement remains. Configure it here, under the
-	// allocation lock, and move to the next GPU if the driver refuses. A VF
-	// left configured by a failed claim below is an unclaimed dirty VF,
-	// which the next allocation repairs.
-	for {
-		vf, ok := vfByAddress(candidates.vfs, vfAddress)
-		if !ok || advertisingGPUs(candidates, profileType)[vf.ParentGPU] {
-			break
-		}
-		probeErr := m.configureClaimedVGPU(ctx, &devices.VGPUDevice{
-			Framework:   devices.VGPUFrameworkVendorVFIO,
-			VFAddress:   vfAddress,
-			ProfileType: profileType,
-		})
+		probeErr := m.placeHiddenVGPU(ctx, candidates.vfs, allMetadata, vf, profileType)
 		if probeErr == nil {
 			log.InfoContext(ctx, "placed vGPU profile its GPU no longer advertises", "vf", vfAddress, "profile", profileName)
 			break
+		}
+		if !errors.Is(probeErr, devices.ErrVGPUTypeRejected) {
+			return nil, probeErr
 		}
 		log.InfoContext(ctx, "driver refused vGPU profile on GPU; trying another GPU", "gpu", vf.ParentGPU, "vf", vfAddress, "profile", profileName, "error", probeErr)
 		candidates.vfs = withoutGPU(candidates.vfs, vf.ParentGPU)
@@ -191,6 +190,25 @@ func (m *manager) resetDirtyUnclaimedVFs(ctx context.Context, vfs []devices.Virt
 	return reset
 }
 
+// placeHiddenVGPU configures vf with a profile its GPU no longer advertises,
+// so the driver decides whether a placement remains. An unclaimed dirty
+// sibling can hold the last placement, so when the driver rejects the type,
+// those siblings are reset (in-use gated) and the write is retried once. A VF
+// left configured by a claim that fails afterwards is such a sibling for the
+// next allocation. Callers must hold vgpuAllocationMu.
+func (m *manager) placeHiddenVGPU(ctx context.Context, vfs []devices.VirtualFunction, allMetadata []StoredMetadata, vf devices.VirtualFunction, profileType string) error {
+	device := &devices.VGPUDevice{
+		Framework:   devices.VGPUFrameworkVendorVFIO,
+		VFAddress:   vf.PCIAddress,
+		ProfileType: profileType,
+	}
+	err := m.configureClaimedVGPU(ctx, device)
+	if errors.Is(err, devices.ErrVGPUTypeRejected) && m.resetDirtyUnclaimedVFs(ctx, siblingVFs(vfs, vf), allMetadata) {
+		err = m.configureClaimedVGPU(ctx, device)
+	}
+	return err
+}
+
 // rememberVGPUProfiles records every profile each GPU's VFs advertise. In
 // mixed-size mode the driver drops a profile from every creatable list on a
 // GPU once that GPU holds as many vGPUs as the profile's equal-size instance
@@ -239,9 +257,10 @@ type vendorVFIOCandidates struct {
 // A GPU that supports the profile but no longer advertises it is still a
 // candidate for a clean VF, ranked after every GPU that does advertise it,
 // because the driver hides profiles by instance count rather than by free
-// placement. The caller must confirm such a choice with the driver. A GPU
-// whose VFs advertise nothing at all has no placement left for any size and
-// is not a candidate.
+// placement. The caller must confirm such a choice with the driver. A free
+// VF that advertises nothing is not a candidate for this: on L40S an empty
+// list means its GPU has no placement left for any size, and a VF whose list
+// could not be read is unknown.
 func selectVendorVFIOVF(c vendorVFIOCandidates, profileName string, pick func(n int) int) (string, string, error) {
 	profilesByName := make(map[string]devices.VGPUProfileType)
 	for _, byName := range c.supported {
@@ -297,12 +316,6 @@ func selectVendorVFIOVF(c vendorVFIOCandidates, profileName string, pick func(n 
 	}
 
 	parentAdvertises := advertisingGPUs(c, requested.TypeName)
-	parentAdvertisesAny := make(map[string]bool)
-	for _, vf := range c.vfs {
-		if len(advertises[vf.PCIAddress]) > 0 {
-			parentAdvertisesAny[vf.ParentGPU] = true
-		}
-	}
 	quarantinedByGPU := make(map[string]int)
 	freeByGPU := make(map[string][]devices.VirtualFunction)
 	for _, vf := range c.vfs {
@@ -316,7 +329,7 @@ func selectVendorVFIOVF(c vendorVFIOCandidates, profileName string, pick func(n 
 		_, directlyCreatable := advertises[vf.PCIAddress][requested.TypeName]
 		repairable := vf.Allocated && (vf.ProfileType == requested.TypeName || parentAdvertises[vf.ParentGPU])
 		supported, ok := c.supported[vf.ParentGPU][profileName]
-		hidden := !vf.Allocated && !parentAdvertises[vf.ParentGPU] && parentAdvertisesAny[vf.ParentGPU] &&
+		hidden := !vf.Allocated && !parentAdvertises[vf.ParentGPU] && len(advertises[vf.PCIAddress]) > 0 &&
 			ok && supported.TypeName == requested.TypeName
 		if directlyCreatable || repairable || hidden {
 			freeByGPU[vf.ParentGPU] = append(freeByGPU[vf.ParentGPU], vf)
@@ -536,6 +549,16 @@ func withoutVF(vfs []devices.VirtualFunction, address string) []devices.VirtualF
 		}
 	}
 	return remaining
+}
+
+func siblingVFs(vfs []devices.VirtualFunction, vf devices.VirtualFunction) []devices.VirtualFunction {
+	siblings := make([]devices.VirtualFunction, 0, len(vfs))
+	for _, other := range vfs {
+		if other.ParentGPU == vf.ParentGPU && other.PCIAddress != vf.PCIAddress {
+			siblings = append(siblings, other)
+		}
+	}
+	return siblings
 }
 
 func withoutGPU(vfs []devices.VirtualFunction, parentGPU string) []devices.VirtualFunction {

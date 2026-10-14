@@ -5,6 +5,7 @@ package instances
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -378,7 +379,7 @@ func TestVGPUClaimTriesNextGPUWhenDriverRefusesHiddenProfile(t *testing.T) {
 	m.configureVGPU = func(_ context.Context, vfAddress, profileType string) error {
 		configured = append(configured, vfAddress)
 		if vfAddress == "0000:82:00.4" {
-			return errors.New("configure vGPU on VF 0000:82:00.4: invalid argument")
+			return errDriverRejected(vfAddress)
 		}
 		return nil
 	}
@@ -396,7 +397,7 @@ func TestVGPUClaimFailsWhenDriverRefusesHiddenProfileEverywhere(t *testing.T) {
 	var configured []string
 	m.configureVGPU = func(_ context.Context, vfAddress, _ string) error {
 		configured = append(configured, vfAddress)
-		return errors.New("invalid argument")
+		return errDriverRejected(vfAddress)
 	}
 
 	_, err := m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "large"), testLargeVGPUProfile)
@@ -406,4 +407,197 @@ func TestVGPUClaimFailsWhenDriverRefusesHiddenProfileEverywhere(t *testing.T) {
 	stored, loadErr := m.loadMetadata("large")
 	require.NoError(t, loadErr)
 	assert.Empty(t, stored.GPUDevicePath)
+}
+
+func TestVGPUClaimFailsOnHiddenProfileConfigureErrorOtherThanRejection(t *testing.T) {
+	hide4Q := true
+	m := newHiddenProfileManager(t, &hide4Q)
+	m.supportedVGPUProfiles = testSupported("0000:82:00.0", "0000:e3:00.0")
+	var configured []string
+	m.configureVGPU = func(_ context.Context, vfAddress, _ string) error {
+		configured = append(configured, vfAddress)
+		return errors.New("VF health state unavailable: read failed")
+	}
+
+	_, err := m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "large"), testLargeVGPUProfile)
+	require.ErrorContains(t, err, "VF health state unavailable")
+	assert.NotContains(t, err.Error(), "not creatable", "only a driver rejection says the GPU is out of placements")
+	assert.Equal(t, []string{"0000:82:00.4"}, configured)
+}
+
+func TestVGPUClaimResetsDirtyVFSelectedAfterDriverRefusal(t *testing.T) {
+	// GPU 82 refuses the hidden 4Q, so the claim moves to GPU e3, whose only
+	// free VF is dirty with a leftover 4Q and still open. It must go through
+	// the reset like any other dirty VF instead of being claimed as is.
+	vfs := []devices.VirtualFunction{
+		{PCIAddress: "0000:82:00.4", ParentGPU: "0000:82:00.0"},
+		{PCIAddress: "0000:e3:00.4", ParentGPU: "0000:e3:00.0", Allocated: true, ProfileType: testLargeProfileType},
+	}
+	var events []string
+	m := &manager{
+		paths: paths.New(t.TempDir()),
+		discoverVGPU: func() (devices.VGPUFramework, []devices.VirtualFunction, error) {
+			return devices.VGPUFrameworkVendorVFIO, vfs, nil
+		},
+		vendorVFIOProfiles: func([]devices.VirtualFunction) (map[string][]devices.VGPUProfileType, error) {
+			return map[string][]devices.VGPUProfileType{
+				"0000:82:00.4": {testSmallProfile},
+				"0000:e3:00.4": {},
+			}, nil
+		},
+		supportedVGPUProfiles: testSupported("0000:82:00.0", "0000:e3:00.0"),
+		destroyVGPU: func(_ context.Context, assignment devices.VGPUAssignment) error {
+			events = append(events, "reset "+assignment.DevicePath)
+			return errors.New("vendor VFIO vGPU on VF 0000:e3:00.4 is still in use")
+		},
+		configureVGPU: func(_ context.Context, vfAddress, _ string) error {
+			events = append(events, "configure "+vfAddress)
+			if vfAddress == "0000:82:00.4" {
+				return errDriverRejected(vfAddress)
+			}
+			return nil
+		},
+		pickVFIndex: pickFirst,
+	}
+
+	_, err := m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "large"), testLargeVGPUProfile)
+	require.ErrorContains(t, err, "repair dirty VF 0000:e3:00.4 before claim")
+	assert.Equal(t, []string{"configure 0000:82:00.4", "reset /sys/bus/pci/devices/0000:e3:00.4"}, events)
+	stored, loadErr := m.loadMetadata("large")
+	require.NoError(t, loadErr)
+	assert.Empty(t, stored.GPUDevicePath)
+}
+
+func TestVGPUClaimResetsDirtySiblingHoldingHiddenPlacement(t *testing.T) {
+	// GPU 82 hides 4Q, and its last 4Q placement is held by an unclaimed
+	// dirty VF, for example one configured by a claim that failed to save.
+	// The clean sibling is tried first; when the driver refuses it, the dirty
+	// VF is reset and the write retried rather than giving up on the GPU.
+	dirty := true
+	m := &manager{
+		paths: paths.New(t.TempDir()),
+		discoverVGPU: func() (devices.VGPUFramework, []devices.VirtualFunction, error) {
+			leftover := devices.VirtualFunction{PCIAddress: "0000:82:00.4", ParentGPU: "0000:82:00.0"}
+			if dirty {
+				leftover.Allocated, leftover.ProfileType = true, testLargeProfileType
+			}
+			return devices.VGPUFrameworkVendorVFIO, []devices.VirtualFunction{
+				leftover,
+				{PCIAddress: "0000:82:00.5", ParentGPU: "0000:82:00.0"},
+			}, nil
+		},
+		vendorVFIOProfiles: func([]devices.VirtualFunction) (map[string][]devices.VGPUProfileType, error) {
+			return map[string][]devices.VGPUProfileType{
+				"0000:82:00.4": {},
+				"0000:82:00.5": {testSmallProfile},
+			}, nil
+		},
+		supportedVGPUProfiles: testSupported("0000:82:00.0"),
+		pickVFIndex:           pickFirst,
+	}
+	var events []string
+	m.destroyVGPU = func(_ context.Context, assignment devices.VGPUAssignment) error {
+		events = append(events, "reset "+assignment.DevicePath)
+		dirty = false
+		return nil
+	}
+	m.configureVGPU = func(_ context.Context, vfAddress, _ string) error {
+		events = append(events, "configure "+vfAddress)
+		if dirty {
+			return errDriverRejected(vfAddress)
+		}
+		return nil
+	}
+
+	device, err := m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "large"), testLargeVGPUProfile)
+	require.NoError(t, err)
+	assert.Equal(t, "0000:82:00.5", device.VFAddress)
+	assert.Equal(t, []string{
+		"configure 0000:82:00.5",
+		"reset /sys/bus/pci/devices/0000:82:00.4",
+		"configure 0000:82:00.5",
+	}, events)
+}
+
+func TestVGPUClaimProbesRepairedVFOnceWhenDriverRefuses(t *testing.T) {
+	// The only candidate is a dirty VF left at 4Q on a GPU that hides 4Q. It
+	// is reset, then probed. A refusal must not count that same VF as a dirty
+	// sibling to reset and retry.
+	vfs := []devices.VirtualFunction{
+		{PCIAddress: "0000:82:00.4", ParentGPU: "0000:82:00.0", Allocated: true, ProfileType: testLargeProfileType},
+	}
+	var events []string
+	m := &manager{
+		paths: paths.New(t.TempDir()),
+		discoverVGPU: func() (devices.VGPUFramework, []devices.VirtualFunction, error) {
+			return devices.VGPUFrameworkVendorVFIO, vfs, nil
+		},
+		vendorVFIOProfiles: func([]devices.VirtualFunction) (map[string][]devices.VGPUProfileType, error) {
+			return map[string][]devices.VGPUProfileType{"0000:82:00.4": {}}, nil
+		},
+		supportedVGPUProfiles: testSupported("0000:82:00.0"),
+		destroyVGPU: func(_ context.Context, assignment devices.VGPUAssignment) error {
+			events = append(events, "reset "+assignment.DevicePath)
+			return nil
+		},
+		configureVGPU: func(_ context.Context, vfAddress, _ string) error {
+			events = append(events, "configure "+vfAddress)
+			return errDriverRejected(vfAddress)
+		},
+	}
+
+	_, err := m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "large"), testLargeVGPUProfile)
+	require.ErrorContains(t, err, "driver refused it on GPU 0000:82:00.0")
+	assert.Equal(t, []string{"reset " + testVFDevicePath, "configure 0000:82:00.4"}, events)
+}
+
+func TestVGPUClaimRemembersProfilesListedAfterDirtyReset(t *testing.T) {
+	// The first claim only sees the GPU's profiles after resetting a dirty
+	// VF that consumed its framebuffer. 4Q must still be remembered from that
+	// listing once the GPU later hides it.
+	dirty := true
+	hide4Q := false
+	m := &manager{
+		paths: paths.New(t.TempDir()),
+		discoverVGPU: func() (devices.VGPUFramework, []devices.VirtualFunction, error) {
+			leftover := devices.VirtualFunction{PCIAddress: "0000:82:00.4", ParentGPU: "0000:82:00.0"}
+			if dirty {
+				leftover.Allocated, leftover.ProfileType = true, "999"
+			}
+			return devices.VGPUFrameworkVendorVFIO, []devices.VirtualFunction{
+				leftover,
+				{PCIAddress: "0000:82:00.5", ParentGPU: "0000:82:00.0"},
+			}, nil
+		},
+		vendorVFIOProfiles: func(vfs []devices.VirtualFunction) (map[string][]devices.VGPUProfileType, error) {
+			profiles := make(map[string][]devices.VGPUProfileType, len(vfs))
+			for _, vf := range vfs {
+				switch {
+				case dirty:
+					profiles[vf.PCIAddress] = []devices.VGPUProfileType{}
+				case hide4Q:
+					profiles[vf.PCIAddress] = []devices.VGPUProfileType{testSmallProfile}
+				default:
+					profiles[vf.PCIAddress] = []devices.VGPUProfileType{testSmallProfile, testLargeProfile}
+				}
+			}
+			return profiles, nil
+		},
+		destroyVGPU: func(context.Context, devices.VGPUAssignment) error {
+			dirty = false
+			return nil
+		},
+		configureVGPU: func(context.Context, string, string) error { return nil },
+		pickVFIndex:   pickFirst,
+	}
+	_, err := m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "small"), testVGPUProfile)
+	require.NoError(t, err)
+
+	hide4Q = true
+	_, err = m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "large"), testLargeVGPUProfile)
+	require.NoError(t, err)
+}
+
+func errDriverRejected(vfAddress string) error {
+	return fmt.Errorf("configure vGPU on VF %s: %w: invalid argument", vfAddress, devices.ErrVGPUTypeRejected)
 }
