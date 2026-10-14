@@ -402,3 +402,21 @@ func TestSelectVendorVFIOVFSkipsGPUThatAdvertisesNothing(t *testing.T) {
 	}, testLargeVGPUProfile, nil)
 	require.ErrorContains(t, err, "no creatable vGPU profiles on any VF")
 }
+
+func TestSelectVendorVFIOVFOffersHiddenProfileOnlyOnCleanVF(t *testing.T) {
+	// GPU 82 hides 4Q and its only free VF is dirty. A configured VF lists
+	// nothing on L40S, but a hidden profile is only offered on a clean VF
+	// regardless of what the dirty one lists; claimVGPU resets unclaimed
+	// dirty VFs and selects again when this fails.
+	vfs := []devices.VirtualFunction{
+		{PCIAddress: "0000:82:00.4", ParentGPU: "0000:82:00.0", Allocated: true, ProfileType: testVFProfileType},
+		{PCIAddress: "0000:82:00.5", ParentGPU: "0000:82:00.0", Allocated: true, ProfileType: testVFProfileType},
+	}
+	_, _, err := selectVendorVFIOVF(vendorVFIOCandidates{
+		vfs:          vfs,
+		profilesByVF: testVFProfiles("0000:82:00.5"),
+		supported:    testSupported("0000:82:00.0"),
+		claims:       []StoredMetadata{{GPUProfile: testVGPUProfile, GPUDevicePath: testVFDevicePath}},
+	}, testLargeVGPUProfile, nil)
+	require.ErrorContains(t, err, "is not creatable on any VF")
+}
