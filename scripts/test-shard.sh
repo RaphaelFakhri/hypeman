@@ -131,10 +131,6 @@ echo "lib/instances: shard $shard runs $tests of $(wc -l < "$tmp/all") tests"
 
 timeout="${TEST_TIMEOUT:-300s}"
 status=0
-if [ "$shard" = other ]; then
-  mapfile -t pkgs < <(go list "${tags[@]}" ./... | grep -vxF "$instances_pkg")
-  go test "${tags[@]}" -timeout="$timeout" ${VERBOSE:+-v} "${pkgs[@]}" || status=$?
-fi
 if ((tests > 0)); then
   start=$SECONDS
   # Run the binary built above from the package directory, as go test would.
@@ -147,5 +143,9 @@ if ((tests > 0)); then
     result=FAIL
   fi
   printf '%s\t%s\t%ds\n' "$result" "$instances_pkg" "$((SECONDS - start))"
+fi
+if [ "$shard" = other ]; then
+  mapfile -t pkgs < <(go list "${tags[@]}" ./... | grep -vxF "$instances_pkg")
+  go test "${tags[@]}" -timeout="$timeout" ${VERBOSE:+-v} "${pkgs[@]}" || status=$?
 fi
 exit "$status"
