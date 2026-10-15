@@ -330,7 +330,7 @@ jobs:
           cp "$PWD/bin/hypeman-uffd-pager" "$HYPEMAN_UFFD_PAGER_BINARY"
           chmod +x "$HYPEMAN_UFFD_PAGER_BINARY"
           export HYPEMAN_TEST_PREWARM_DIR="/ci/prewarm/linux-amd64"
-          make test-linux-shard SHARD=${{ matrix.shard }} SHARD_COUNT=${{ strategy.job-total }} TEST_TIMEOUT=20m VERBOSE=1
+          make test-linux-shard SHARD=${{ matrix.shard }} SHARD_COUNT=${{ strategy.job-total }} TEST_TIMEOUT=20m
 
       - name: Cleanup
         if: always()
