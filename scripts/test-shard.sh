@@ -5,9 +5,10 @@
 #
 # The suite is split into COUNT shards. Shard "other" runs every package except
 # lib/instances. Shards instances-1 through instances-<COUNT-1> split the
-# top-level tests of lib/instances, the slowest package, by a hash of each test
-# name. Tests are discovered with -test.list, so new tests are assigned
-# automatically and existing tests keep their shard.
+# top-level tests of lib/instances, the slowest package, round-robin in name
+# order. Tests that share a name prefix tend to cost about the same (for
+# example the sequential TestQEMUMicroVM* tests), so this spreads them evenly.
+# Tests are discovered with -test.list, so new tests are assigned automatically.
 #
 # Before running, an instances shard checks that the -run patterns of all
 # instances shards together select every test exactly once.
@@ -37,11 +38,9 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 go test "${tags[@]}" -c -o "$tmp/instances.test" ./lib/instances
-"$tmp/instances.test" -test.list '.*' | sort > "$tmp/all"
-while read -r name; do
-  sum="$(printf '%s' "$name" | cksum)"
-  echo "$((${sum%% *} % parts + 1)) $name"
-done < "$tmp/all" > "$tmp/assigned"
+# Fix the collation so every shard computes the same assignment.
+"$tmp/instances.test" -test.list '.*' | LC_ALL=C sort > "$tmp/all"
+awk -v parts="$parts" '{ print (NR - 1) % parts + 1, $0 }' "$tmp/all" > "$tmp/assigned"
 
 pattern() {
   echo "^($(awk -v shard="$1" '$1 == shard { print $2 }' "$tmp/assigned" | paste -sd'|'))\$"
@@ -49,7 +48,7 @@ pattern() {
 
 for ((i = 1; i <= parts; i++)); do
   "$tmp/instances.test" -test.list "$(pattern "$i")"
-done | sort > "$tmp/selected"
+done | LC_ALL=C sort > "$tmp/selected"
 if ! diff -u "$tmp/all" "$tmp/selected"; then
   echo "lib/instances shards do not select every test exactly once" >&2
   exit 1
