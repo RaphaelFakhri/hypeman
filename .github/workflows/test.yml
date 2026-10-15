@@ -79,10 +79,6 @@ jobs:
       # Nothing here ever fails the job.
       - name: Clean leaked test networks
         run: |
-          echo "TEMP all test interfaces by prefix/state:"; ip -br link show | awk '$1 ~ /^(h[0-9a-f]{8}|hi[0-9a-f]+|hm[0-9a-f]+|hype-[a-z0-9]+)$/ {print substr($1,1,2), $2}' | sort | uniq -c
-          echo "TEMP linkdown test routes by prefix:"; ip -4 route show | awk '/linkdown/ {for (i=1;i<NF;i++) if ($i=="dev") print substr($(i+1),1,2)}' | sort | uniq -c
-          echo "TEMP iptables FORWARD rules: $(sudo iptables -w 5 -S FORWARD | wc -l), nat POSTROUTING: $(sudo iptables -w 5 -t nat -S POSTROUTING | wc -l)"
-          sweep_start=$(date +%s.%N)
           cutoff=$(( $(date +%s) - 3600 ))
           ip -br link show | awk '$1 ~ /^(h[0-9a-f]{8}|hi[0-9a-f]+|hm[0-9a-f]+|hype-[a-z0-9]+)$/ && $2 == "DOWN" {print $1}' |
           while read -r ifc; do
@@ -95,8 +91,6 @@ jobs:
           # interfaces another job already removed.
           sed 's/^/link del /' "$RUNNER_TEMP/net-sweep-dead" | sudo ip -force -batch - 2>/dev/null || true
           echo "swept $(wc -l < "$RUNNER_TEMP/net-sweep-dead") interfaces (DOWN, portless, older than 1h)"
-          echo "TEMP swept by prefix:"; cut -c1-2 "$RUNNER_TEMP/net-sweep-dead" | sort | uniq -c
-          echo "TEMP sweep seconds: $(echo "$(date +%s.%N) - $sweep_start" | bc)"
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -337,7 +331,7 @@ jobs:
           cp "$PWD/bin/hypeman-uffd-pager" "$HYPEMAN_UFFD_PAGER_BINARY"
           chmod +x "$HYPEMAN_UFFD_PAGER_BINARY"
           export HYPEMAN_TEST_PREWARM_DIR="/ci/prewarm/linux-amd64"
-          make test-linux-shard SHARD=${{ matrix.shard }} SHARD_COUNT=${{ strategy.job-total }} TEST_TIMEOUT=20m VERBOSE=1
+          make test-linux-shard SHARD=${{ matrix.shard }} SHARD_COUNT=${{ strategy.job-total }} TEST_TIMEOUT=20m
 
       - name: Cleanup
         if: always()
