@@ -124,6 +124,10 @@ jobs:
               n=$((n + 1))
             done
           }
+          # mkfs.ext4 and iptables live in sbin, which is not on the runner's
+          # PATH on every host. Without it this step runs apt on every job, and
+          # shards on the same host then contend for the apt lock.
+          PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
           if ! command -v mkfs.erofs &> /dev/null || \
              ! command -v mkfs.ext4 &> /dev/null || \
              ! command -v iptables &> /dev/null || \
