@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: oapi-generate generate-vmm-client generate-wire generate-all dev build build-linux test test-linux test-linux-shard test-darwin test-guestmemory-linux test-guestmemory-vz install-tools gen-jwt download-ch-binaries download-firecracker-binaries download-ch-spec ensure-ch-binaries ensure-firecracker-binaries build-caddy-binaries build-caddy ensure-caddy-binaries release-prep clean build-embedded
+.PHONY: oapi-generate generate-vmm-client generate-wire generate-all dev build build-linux test test-linux test-linux-shard test-shard-weights test-darwin test-guestmemory-linux test-guestmemory-vz install-tools gen-jwt download-ch-binaries download-firecracker-binaries download-ch-spec ensure-ch-binaries ensure-firecracker-binaries build-caddy-binaries build-caddy ensure-caddy-binaries release-prep clean build-embedded
 
 # Directory where local binaries will be installed
 BIN_DIR ?= $(CURDIR)/bin
@@ -318,11 +318,17 @@ test-linux: ensure-ch-binaries ensure-firecracker-binaries ensure-caddy-binaries
 	fi
 
 # One shard of test-linux; CI runs every shard in parallel.
-# Usage: make test-linux-shard SHARD=instances-1 SHARD_COUNT=4
+# Usage: make test-linux-shard SHARD=instances-1 SHARD_COUNT=3
 # See scripts/test-shard.sh for how the suite is split.
 test-linux-shard: ensure-ch-binaries ensure-firecracker-binaries ensure-caddy-binaries build-embedded $(BIN_DIR)/hypeman-uffd-pager
 	@$(LINUX_TEST_SUDO) "TEST_TIMEOUT=$(TEST_TIMEOUT)" "VERBOSE=$(VERBOSE)" \
 		bash scripts/test-shard.sh "$(SHARD)" "$(SHARD_COUNT)"
+
+# Rewrites scripts/test-shard-weights.txt from one full test-linux run.
+test-shard-weights: ensure-ch-binaries ensure-firecracker-binaries ensure-caddy-binaries build-embedded $(BIN_DIR)/hypeman-uffd-pager
+	@$(LINUX_TEST_SUDO) go test -tags containers_image_openpgp -json -timeout=30m ./... | \
+		bash scripts/test-shard.sh weights > scripts/test-shard-weights.txt.new
+	@mv scripts/test-shard-weights.txt.new scripts/test-shard-weights.txt
 
 # macOS tests (no sudo needed, adds e2fsprogs to PATH)
 # Uses 'go list' to discover compilable packages, then filters out packages
