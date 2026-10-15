@@ -86,9 +86,9 @@ jobs:
               echo "$ifc"
             fi
           done > "$RUNNER_TEMP/net-sweep-dead"
-          while read -r ifc; do
-            sudo ip link del "$ifc" 2>/dev/null || true
-          done < "$RUNNER_TEMP/net-sweep-dead"
+          # One ip process deletes the whole list; -force keeps going past
+          # interfaces another job already removed.
+          sed 's/^/link del /' "$RUNNER_TEMP/net-sweep-dead" | sudo ip -force -batch - 2>/dev/null || true
           echo "swept $(wc -l < "$RUNNER_TEMP/net-sweep-dead") interfaces (DOWN, portless, older than 1h)"
 
       - name: Set up Go
