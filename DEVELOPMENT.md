@@ -338,6 +338,8 @@ make test
 
 The test command compiles test binaries, grants capabilities via `sudo setcap`, then runs tests as the current user (not root). You may be prompted for your sudo password during the capability grant step.
 
+CI splits the Linux run into parallel shards (see `scripts/test-shard.sh`). To reproduce one shard locally, run the same target CI runs, for example `make test-linux-shard SHARD=instances-2 SHARD_COUNT=4`.
+
 ## Code Generation
 
 After modifying `openapi.yaml`, regenerate the Go code:
