@@ -3,8 +3,10 @@
 package devices
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,6 +15,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/kernel/hypeman/lib/logger"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -177,30 +180,35 @@ func TestVendorVFIOConfigurePacksPlacement(t *testing.T) {
 
 func TestVendorVFIOConfigureKeepsDriverPlacement(t *testing.T) {
 	tests := []struct {
-		name  string
-		setup func(sysfs *testVendorVFIOSysfs)
+		name   string
+		setup  func(sysfs *testVendorVFIOSysfs)
+		logged string
 	}{
 		{
-			name: "equal-size mode",
+			name:   "equal-size mode",
+			logged: "equal-size vGPU mode",
 			setup: func(sysfs *testVendorVFIOSysfs) {
 				query := strings.Replace(testHeterogeneousQuery, "Enabled", "Disabled", 1)
 				sysfs.nvidiaSMIFunc = func(context.Context, ...string) ([]byte, error) { return []byte(query), nil }
 			},
 		},
 		{
-			name: "nvidia-smi fails",
+			name:   "nvidia-smi fails",
+			logged: "exit status 9",
 			setup: func(sysfs *testVendorVFIOSysfs) {
 				sysfs.nvidiaSMIFunc = func(context.Context, ...string) ([]byte, error) { return nil, errors.New("exit status 9") }
 			},
 		},
 		{
-			name: "sibling of unknown type",
+			name:   "sibling of unknown type",
+			logged: "no known placement size",
 			setup: func(sysfs *testVendorVFIOSysfs) {
 				sysfs.addPlacedVF(t, "0000:82:00.6", "44", "999", 8)
 			},
 		},
 		{
-			name: "driver refuses placement",
+			name:   "driver refuses placement",
+			logged: "driver refused vGPU placement",
 			setup: func(sysfs *testVendorVFIOSysfs) {
 				sysfs.writeFileFunc = func(name string, data []byte, perm os.FileMode) error {
 					if filepath.Base(name) == "placement_id" {
@@ -217,10 +225,13 @@ func TestVendorVFIOConfigureKeepsDriverPlacement(t *testing.T) {
 			sysfs.addPlacedVF(t, "0000:82:00.4", "42", "0", 0)
 			sysfs.addPlacedVF(t, "0000:82:00.5", "43", testL40S2Q, 4)
 			tt.setup(&sysfs)
+			var logs bytes.Buffer
+			ctx := logger.AddToContext(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)))
 
-			require.NoError(t, sysfs.configure(context.Background(), "0000:82:00.4", testL40S2Q))
+			require.NoError(t, sysfs.configure(ctx, "0000:82:00.4", testL40S2Q))
 			assertFileValue(t, filepath.Join(sysfs.pciDevicesPath, "0000:82:00.4", "nvidia", "current_vgpu_type"), testL40S2Q)
 			assertFileValue(t, filepath.Join(sysfs.pciDevicesPath, "0000:82:00.4", "nvidia", "placement_id"), "0")
+			assert.Contains(t, logs.String(), tt.logged)
 		})
 	}
 }

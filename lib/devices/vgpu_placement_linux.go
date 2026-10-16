@@ -4,6 +4,7 @@ package devices
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -117,8 +118,11 @@ func (s vendorVFIOSysfs) loadPlacementGeometry(ctx context.Context, parentGPU st
 		return vgpuPlacementGeometry{}, fmt.Errorf("query GPU: %w", err)
 	}
 	heterogeneous, err := parseHeterogeneousMode(string(query))
-	if err != nil || !heterogeneous {
+	if err != nil {
 		return vgpuPlacementGeometry{}, err
+	}
+	if !heterogeneous {
+		return vgpuPlacementGeometry{}, errors.New("GPU is in equal-size vGPU mode")
 	}
 	supported, err := s.nvidiaSMI(ctx, "vgpu", "-s", "-v", "-i", parentGPU)
 	if err != nil {
