@@ -166,10 +166,12 @@ func TestVendorVFIOConfigurePacksPlacement(t *testing.T) {
 	sysfs, calls := newPackingSysfs(t, testHeterogeneousQuery)
 	// The driver put the new 2Q at the lowest free placement, 0, which
 	// overlaps the 4Q placement at 0. Placement 6 overlaps none. The clean
-	// sibling occupies nothing.
+	// sibling occupies nothing, and the 2Q at 6 is on another GPU.
 	sysfs.addPlacedVF(t, "0000:82:00.4", "42", "0", 0)
 	sysfs.addPlacedVF(t, "0000:82:00.5", "43", testL40S2Q, 4)
 	sysfs.addVF(t, "0000:82:00.0", "0000:82:00.7", "45", "0", testCreatableTypes)
+	sysfs.addVF(t, "0000:83:00.0", "0000:83:00.4", "46", testL40S2Q, testCreatableTypes)
+	require.NoError(t, os.WriteFile(filepath.Join(sysfs.pciDevicesPath, "0000:83:00.4", "nvidia", "placement_id"), []byte("6"), 0644))
 
 	require.NoError(t, sysfs.configure(context.Background(), "0000:82:00.4", testL40S2Q))
 	assertFileValue(t, filepath.Join(sysfs.pciDevicesPath, "0000:82:00.4", "nvidia", "placement_id"), "6")
