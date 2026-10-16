@@ -15,6 +15,8 @@ import (
 	"github.com/kernel/hypeman/lib/paths"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	otelmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func newVGPUAllocationManager(t *testing.T, vfs []devices.VirtualFunction) *manager {
@@ -379,6 +381,10 @@ func TestVGPUClaimTriesNextGPUWhenDriverRefusesHiddenProfile(t *testing.T) {
 	hide4Q := true
 	m := newHiddenProfileManager(t, &hide4Q)
 	m.supportedVGPUProfiles = testSupported("0000:82:00.0", "0000:e3:00.0")
+	reader := otelmetric.NewManualReader()
+	metrics, err := newInstanceMetrics(otelmetric.NewMeterProvider(otelmetric.WithReader(reader)).Meter("test"), nil, m)
+	require.NoError(t, err)
+	m.metrics = metrics
 	var configured []string
 	m.configureVGPU = func(_ context.Context, vfAddress, profileType string) error {
 		configured = append(configured, vfAddress)
@@ -392,6 +398,16 @@ func TestVGPUClaimTriesNextGPUWhenDriverRefusesHiddenProfile(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "0000:e3:00.4", device.VFAddress)
 	assert.Equal(t, []string{"0000:82:00.4", "0000:e3:00.4"}, configured, "a refusal rules out the whole GPU, not just the VF")
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+	rejections, ok := findMetric(t, rm, "hypeman_instances_vgpu_driver_rejections_total").Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, rejections.DataPoints, 1)
+	assert.Equal(t, int64(1), rejections.DataPoints[0].Value)
+	gpu, ok := rejections.DataPoints[0].Attributes.Value("gpu")
+	require.True(t, ok)
+	assert.Equal(t, "0000:82:00.0", gpu.AsString())
 }
 
 func TestVGPUClaimFailsWhenDriverRefusesHiddenProfileEverywhere(t *testing.T) {
