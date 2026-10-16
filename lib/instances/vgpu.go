@@ -423,8 +423,6 @@ func selectVendorVFIOVF(c vendorVFIOCandidates, profileName string, pick func(n 
 	return candidates[pick(n)].PCIAddress, requested.TypeName, nil
 }
 
-// advertisingGPUs returns the parent GPUs with at least one VF advertising
-// profileType.
 func advertisingGPUs(c vendorVFIOCandidates, profileType string) map[string]bool {
 	gpus := make(map[string]bool)
 	for _, vf := range c.vfs {

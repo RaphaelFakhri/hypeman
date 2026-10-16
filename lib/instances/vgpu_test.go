@@ -291,7 +291,7 @@ func TestSelectVendorVFIOVFOffersSupportedProfileItsGPUHides(t *testing.T) {
 	assert.Equal(t, "0000:e3:00.5", vf)
 	assert.Equal(t, testLargeProfileType, profileType)
 
-	// Without a remembered profile the request fails as before.
+	// Without a remembered profile the request fails.
 	c.supported = nil
 	_, _, err = selectVendorVFIOVF(c, testLargeVGPUProfile, nil)
 	require.ErrorContains(t, err, "is not creatable on any VF")
