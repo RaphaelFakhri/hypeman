@@ -231,7 +231,9 @@ func choosePlacement(types map[string]vgpuPlacementType, occupied []placementSpa
 	}
 
 	best, bestBlocked := current, blocked(current)
-	for _, id := range requested.ids {
+	ids := append([]int(nil), requested.ids...)
+	sort.Ints(ids)
+	for _, id := range ids {
 		if !free(placementSpan{start: id, size: requested.size}) {
 			continue
 		}
