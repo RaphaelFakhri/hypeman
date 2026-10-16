@@ -557,6 +557,45 @@ func TestVGPUClaimResetsDirtySiblingHoldingHiddenPlacement(t *testing.T) {
 	}, events)
 }
 
+func TestVGPUClaimKeepsClaimedSiblingWhenDriverRefuses(t *testing.T) {
+	// GPU 82's configured sibling belongs to another instance, so a refusal
+	// must not reset it to free a placement.
+	vfs := []devices.VirtualFunction{
+		{PCIAddress: "0000:82:00.4", ParentGPU: "0000:82:00.0", Allocated: true, ProfileType: testVFProfileType},
+		{PCIAddress: "0000:82:00.5", ParentGPU: "0000:82:00.0"},
+	}
+	var events []string
+	m := &manager{
+		paths: paths.New(t.TempDir()),
+		discoverVGPU: func() (devices.VGPUFramework, []devices.VirtualFunction, error) {
+			return devices.VGPUFrameworkVendorVFIO, vfs, nil
+		},
+		vendorVFIOProfiles: func([]devices.VirtualFunction) (map[string][]devices.VGPUProfileType, error) {
+			return map[string][]devices.VGPUProfileType{
+				"0000:82:00.4": {},
+				"0000:82:00.5": {testSmallProfile},
+			}, nil
+		},
+		supportedVGPUProfiles: testSupported("0000:82:00.0"),
+		destroyVGPU: func(_ context.Context, assignment devices.VGPUAssignment) error {
+			events = append(events, "reset "+assignment.DevicePath)
+			return nil
+		},
+		configureVGPU: func(_ context.Context, vfAddress, _ string) error {
+			events = append(events, "configure "+vfAddress)
+			return errDriverRejected(vfAddress)
+		},
+	}
+	running := saveTestVGPUInstance(t, m, "running")
+	running.GPUFramework = devices.VGPUFrameworkVendorVFIO
+	running.GPUDevicePath = testVFDevicePath
+	require.NoError(t, m.saveMetadata(running))
+
+	_, err := m.claimVGPU(context.Background(), saveTestVGPUInstance(t, m, "large"), testLargeVGPUProfile)
+	require.ErrorContains(t, err, "driver refused it on GPU 0000:82:00.0")
+	assert.Equal(t, []string{"configure 0000:82:00.5"}, events)
+}
+
 func TestVGPUClaimResetsDirtyVFsOnOtherGPUAfterHiddenProfileRefused(t *testing.T) {
 	// GPU 41 hides 4Q and refuses it. GPU 82 is filled by an unclaimed dirty
 	// VF, so its free VF lists nothing and is no candidate. The hidden
