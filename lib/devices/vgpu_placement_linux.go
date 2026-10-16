@@ -105,7 +105,6 @@ func (s vendorVFIOSysfs) placementGeometry(ctx context.Context, parentGPU string
 	geometry, err := s.loadPlacementGeometry(ctx, parentGPU)
 	if err != nil {
 		logger.FromContext(ctx).WarnContext(ctx, "vGPU placement packing disabled for GPU", "gpu", parentGPU, "error", err)
-		geometry = vgpuPlacementGeometry{}
 	}
 	geometry.loadedAt = time.Now()
 	vgpuPlacements[key] = geometry
@@ -232,9 +231,7 @@ func choosePlacement(types map[string]vgpuPlacementType, occupied []placementSpa
 	}
 
 	best, bestBlocked := current, blocked(current)
-	ids := append([]int(nil), requested.ids...)
-	sort.Ints(ids)
-	for _, id := range ids {
+	for _, id := range requested.ids {
 		if !free(placementSpan{start: id, size: requested.size}) {
 			continue
 		}
