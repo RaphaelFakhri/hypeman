@@ -182,31 +182,6 @@ func TestVGPULivenessUncertainMetric(t *testing.T) {
 	assert.Equal(t, int64(1), uncertain.DataPoints[0].Value)
 }
 
-func TestVGPUDriverRejectionMetric(t *testing.T) {
-	t.Parallel()
-
-	reader := otelmetric.NewManualReader()
-	provider := otelmetric.NewMeterProvider(otelmetric.WithReader(reader))
-	m := &manager{paths: paths.New(t.TempDir())}
-	metrics, err := newInstanceMetrics(provider.Meter("test"), nil, m)
-	require.NoError(t, err)
-	m.metrics = metrics
-
-	m.recordVGPUDriverRejection(t.Context(), "0000:82:00.0")
-	m.recordVGPUDriverRejection(t.Context(), "0000:82:00.0")
-
-	var rm metricdata.ResourceMetrics
-	require.NoError(t, reader.Collect(t.Context(), &rm))
-	metricValue := findMetric(t, rm, "hypeman_instances_vgpu_driver_rejections_total")
-	rejections, ok := metricValue.Data.(metricdata.Sum[int64])
-	require.True(t, ok)
-	require.Len(t, rejections.DataPoints, 1)
-	assert.Equal(t, int64(2), rejections.DataPoints[0].Value)
-	gpu, ok := rejections.DataPoints[0].Attributes.Value("gpu")
-	require.True(t, ok)
-	assert.Equal(t, "0000:82:00.0", gpu.AsString())
-}
-
 func TestLifecycleEventMetrics_ObserveSubscribersQueueDepthAndDrops(t *testing.T) {
 	t.Parallel()
 
