@@ -182,6 +182,21 @@ func TestVendorVFIOConfigurePacksPlacement(t *testing.T) {
 	assert.Equal(t, 2, *calls, "geometry is loaded once per GPU")
 }
 
+func TestVendorVFIOConfigureCachesFailedPlacementLoad(t *testing.T) {
+	sysfs := newTestVendorVFIOSysfs(t)
+	calls := 0
+	sysfs.nvidiaSMIFunc = func(context.Context, ...string) ([]byte, error) {
+		calls++
+		return nil, errors.New("exit status 9")
+	}
+	sysfs.addPlacedVF(t, "0000:82:00.4", "42", "0", 0)
+	sysfs.addPlacedVF(t, "0000:82:00.5", "43", "0", 0)
+
+	require.NoError(t, sysfs.configure(context.Background(), "0000:82:00.4", testL40S2Q))
+	require.NoError(t, sysfs.configure(context.Background(), "0000:82:00.5", testL40S2Q))
+	assert.Equal(t, 1, calls, "a failed load is cached too")
+}
+
 func TestVendorVFIOConfigureKeepsDriverPlacement(t *testing.T) {
 	tests := []struct {
 		name   string
