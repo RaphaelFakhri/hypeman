@@ -308,7 +308,7 @@ func newInstanceMetrics(meter metric.Meter, tracer trace.Tracer, m *manager) (*M
 
 	vgpuDriverRejectionsTotal, err := meter.Int64Counter(
 		"hypeman_instances_vgpu_driver_rejections_total",
-		metric.WithDescription("Total vendor VFIO current_vgpu_type writes the driver refused during placement, after which the GPU was skipped for that claim"),
+		metric.WithDescription("Total times a GPU was skipped during vendor VFIO vGPU placement because the driver refused the type, counted once per claim and GPU"),
 	)
 	if err != nil {
 		return nil, err
