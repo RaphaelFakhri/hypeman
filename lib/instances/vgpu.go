@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"path/filepath"
+	"slices"
 	"sort"
 
 	"github.com/kernel/hypeman/lib/devices"
@@ -67,7 +68,27 @@ func (m *manager) claimVGPU(ctx context.Context, meta *metadata, profileName str
 		return nil, err
 	}
 	candidates := vendorVFIOCandidates{vfs: vfs, profilesByVF: profilesByVF, supported: m.supportedVGPUProfiles, claims: allMetadata, quarantined: quarantined}
+	// refreshCandidates re-reads VF state and creatable lists after dirty VFs
+	// were reset, keeping only the VFs still in candidates.
+	refreshCandidates := func() error {
+		_, vfs, err := m.discoverVGPUDevices()
+		if err != nil {
+			return err
+		}
+		vfs = slices.DeleteFunc(vfs, func(vf devices.VirtualFunction) bool {
+			_, ok := vfByAddress(candidates.vfs, vf.PCIAddress)
+			return !ok
+		})
+		profilesByVF, err := listProfiles(vfs)
+		if err != nil {
+			return err
+		}
+		m.rememberVGPUProfiles(vfs, profilesByVF)
+		candidates.vfs, candidates.profilesByVF = vfs, profilesByVF
+		return nil
+	}
 	vfAddress, profileType, err := selectVendorVFIOVF(candidates, profileName, m.pickVFIndex)
+	dirtyReset := err != nil
 	if err != nil {
 		// A dirty unclaimed VF consumes framebuffer, which can make the
 		// requested profile vanish from every creatable list before the
@@ -75,14 +96,9 @@ func (m *manager) claimVGPU(ctx context.Context, meta *metadata, profileName str
 		if !m.resetDirtyUnclaimedVFs(ctx, vfs, allMetadata) {
 			return nil, err
 		}
-		if _, vfs, err = m.discoverVGPUDevices(); err != nil {
+		if err = refreshCandidates(); err != nil {
 			return nil, err
 		}
-		if candidates.profilesByVF, err = listProfiles(vfs); err != nil {
-			return nil, err
-		}
-		m.rememberVGPUProfiles(vfs, candidates.profilesByVF)
-		candidates.vfs = vfs
 		if vfAddress, profileType, err = selectVendorVFIOVF(candidates, profileName, m.pickVFIndex); err != nil {
 			return nil, err
 		}
@@ -134,7 +150,18 @@ func (m *manager) claimVGPU(ctx context.Context, meta *metadata, profileName str
 		log.InfoContext(ctx, "driver refused vGPU profile on GPU; trying another GPU", "gpu", vf.ParentGPU, "vf", vfAddress, "profile", profileName, "error", placeErr)
 		m.recordVGPUDriverRejection(ctx, vf.ParentGPU)
 		candidates.vfs = withoutGPU(candidates.vfs, vf.ParentGPU)
-		if vfAddress, profileType, err = selectVendorVFIOVF(candidates, profileName, m.pickVFIndex); err != nil {
+		vfAddress, profileType, err = selectVendorVFIOVF(candidates, profileName, m.pickVFIndex)
+		// A hidden candidate can satisfy the first selection while dirty VFs
+		// fill a GPU that has no candidate, so the dirty-VF retry above did
+		// not run. Run it once before giving up.
+		if err != nil && !dirtyReset && m.resetDirtyUnclaimedVFs(ctx, candidates.vfs, allMetadata) {
+			dirtyReset = true
+			if err = refreshCandidates(); err != nil {
+				return nil, err
+			}
+			vfAddress, profileType, err = selectVendorVFIOVF(candidates, profileName, m.pickVFIndex)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("%w (driver refused it on GPU %s: %v)", err, vf.ParentGPU, placeErr)
 		}
 	}
