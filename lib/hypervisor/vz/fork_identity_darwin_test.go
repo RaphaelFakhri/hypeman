@@ -16,13 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestPrepareForkMachineIdentifierCollisionRepro intentionally fails when enabled.
-// It diagnoses duplicated platform identity, not guest-visible consequences.
-func TestPrepareForkMachineIdentifierCollisionRepro(t *testing.T) {
-	if os.Getenv("HYPEMAN_VZ_IDENTITY_REPRO") != "1" {
-		t.Skip("set HYPEMAN_VZ_IDENTITY_REPRO=1 to reproduce duplicate VZ machine identifiers")
-	}
-
+func TestPrepareForkPreservesMachineIdentifier(t *testing.T) {
 	machineID, err := applevz.NewGenericMachineIdentifier()
 	require.NoError(t, err)
 	original := shimconfig.SnapshotManifest{
@@ -56,7 +50,6 @@ func TestPrepareForkMachineIdentifierCollisionRepro(t *testing.T) {
 	_, err = applevz.NewGenericPlatformConfiguration(applevz.WithGenericMachineIdentifier(restoredID))
 	require.NoError(t, err)
 
-	t.Log("fork manifest reconstructs a VZ platform; no VM was booted")
-	require.NotEqual(t, machineID.DataRepresentation(), restoredID.DataRepresentation(),
-		"source and fork reconstruct the same platform identifier; concurrent execution needs an explicit identity-collision policy")
+	// Saved machine state can only be restored with its original platform identity.
+	require.Equal(t, machineID.DataRepresentation(), restoredID.DataRepresentation())
 }
