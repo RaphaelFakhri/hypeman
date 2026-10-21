@@ -12,6 +12,7 @@ import (
 
 	"github.com/kernel/hypeman/lib/devices"
 	"github.com/kernel/hypeman/lib/egressproxy"
+	"github.com/kernel/hypeman/lib/guest"
 	"github.com/kernel/hypeman/lib/guestmemory"
 	"github.com/kernel/hypeman/lib/hypervisor"
 	"github.com/kernel/hypeman/lib/images"
@@ -210,7 +211,11 @@ type manager struct {
 	nativeCodecPaths          map[string]string
 	imageUsageRecorder        ImageUsageRecorder
 	guestAgentReadyProbe      func(context.Context, *StoredMetadata) bool
+	guestAgentInfoProbe       func(context.Context, *StoredMetadata) (*guest.GetAgentInfoResponse, error)
 	shutdownGuestFn           func(context.Context, hypervisor.VsockDialer, int32) error
+
+	// macOSAgentNotReady holds, per instance id, why a macOS agent probe last failed.
+	macOSAgentNotReady sync.Map
 
 	// Shared lifecycle event subscriptions for internal consumers.
 	lifecycleEvents *lifecycleSubscribers
@@ -927,7 +932,7 @@ func (m *manager) ListRunningInstancesInfo(ctx context.Context) ([]resources.Ins
 		}
 
 		// Derive TAP device name if networking is enabled
-		if inst.NetworkEnabled && inst.MacOS == nil {
+		if inst.usesLinuxNetwork() {
 			info.TAPDevice = network.GenerateTAPName(inst.Id)
 		}
 		info.StoragePath = inst.VMStoragePath()
