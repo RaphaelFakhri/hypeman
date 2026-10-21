@@ -24,7 +24,6 @@ const (
 type Client struct {
 	domain    *qemu.Domain
 	raw       *raw.Monitor
-	mon       *qmp.SocketMonitor
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -36,61 +35,23 @@ func NewClient(socketPath string) (*Client, error) {
 	return NewClientContext(ctx, socketPath)
 }
 
-// NewClientContext creates a QEMU client while bounding socket connection and
-// QMP handshake time by the caller's context.
+// NewClientContext creates a QEMU client using the caller's context for dial and handshake.
 func NewClientContext(ctx context.Context, socketPath string) (*Client, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, qmpConnectTimeout)
 		defer cancel()
 	}
-	if err := ctx.Err(); err != nil {
+	mon, err := newSocketMonitor(ctx, socketPath)
+	if err != nil {
 		return nil, err
 	}
-	connectTimeout := qmpConnectTimeout
-	if deadline, ok := ctx.Deadline(); ok {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			return nil, context.DeadlineExceeded
-		}
-		if remaining < connectTimeout {
-			connectTimeout = remaining
-		}
-	}
-	mon, err := qmp.NewSocketMonitor("unix", socketPath, connectTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("create socket monitor: %w", err)
-	}
-
-	connectCh := make(chan error, 1)
-	go func() { connectCh <- mon.Connect() }()
-	select {
-	case err := <-connectCh:
-		if err != nil {
-			_ = mon.Disconnect()
-			return nil, fmt.Errorf("connect to qmp: %w", err)
-		}
-	case <-ctx.Done():
-		_ = mon.Disconnect()
-		<-connectCh
-		_ = mon.Disconnect()
-		return nil, fmt.Errorf("connect to qmp: %w", ctx.Err())
-	}
-
 	domain, err := qemu.NewDomain(mon, "vm")
 	if err != nil {
-		mon.Disconnect()
+		_ = mon.Disconnect()
 		return nil, fmt.Errorf("create domain: %w", err)
 	}
-
-	return &Client{
-		domain: domain,
-		raw:    raw.NewMonitor(mon),
-		mon:    mon,
-	}, nil
+	return &Client{domain: domain, raw: raw.NewMonitor(mon)}, nil
 }
 
 // Close disconnects from the QMP socket.

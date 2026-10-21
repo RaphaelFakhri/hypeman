@@ -2,6 +2,7 @@ package qemu
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"sync"
@@ -49,6 +50,51 @@ func awaitTestValue[T any](t *testing.T, ch <-chan T, timeoutMessage string) T {
 		var zero T
 		return zero
 	}
+}
+
+func TestSocketMonitorHandshakeAndCommand(t *testing.T) {
+	listener, err := net.Listen("unix", t.TempDir()+"/qemu.sock")
+	require.NoError(t, err)
+	defer listener.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+		if _, err := conn.Write([]byte("{\"QMP\":{}}\n")); err != nil {
+			serverErr <- err
+			return
+		}
+		decoder := json.NewDecoder(conn)
+		var command map[string]any
+		if err := decoder.Decode(&command); err != nil {
+			serverErr <- err
+			return
+		}
+		if _, err := conn.Write([]byte("{\"return\":{}}\n")); err != nil {
+			serverErr <- err
+			return
+		}
+		if err := decoder.Decode(&command); err != nil {
+			serverErr <- err
+			return
+		}
+		_, err = conn.Write([]byte("{\"return\":{\"status\":\"running\"}}\n"))
+		serverErr <- err
+	}()
+
+	monitor, err := newSocketMonitor(context.Background(), listener.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = monitor.Disconnect() })
+	response, err := monitor.Run([]byte(`{"execute":"query-status"}` + "\n"))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"return":{"status":"running"}}`, string(response))
+	require.NoError(t, monitor.Disconnect())
+	require.NoError(t, <-serverErr)
 }
 
 func TestNewClientContextBoundsQMPHandshake(t *testing.T) {

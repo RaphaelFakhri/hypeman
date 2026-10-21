@@ -68,11 +68,6 @@ func GetOrCreateForTypeContext(ctx context.Context, socketPath string, hyperviso
 	}
 
 	clientPool.Lock()
-	if existing := clientPool.clients[socketPath]; existing != nil {
-		clientPool.Unlock()
-		closeClientAsync(client)
-		return existing, nil
-	}
 	if creationLock.generation != generation {
 		clientPool.Unlock()
 		closeClientAsync(client)
