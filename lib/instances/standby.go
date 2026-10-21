@@ -112,10 +112,15 @@ func (m *manager) standbyInstance(
 		return nil, fmt.Errorf("hypervisor %s does not support standby (snapshots)", stored.HypervisorType)
 	}
 
-	// Keep state probes out of the VMM socket while pausing and snapshotting.
+	// Keep state probes out of the VMM socket until it has been shut down.
 	stateQueryLock := m.hypervisorStateQueryLock(id)
 	stateQueryLock.Lock()
-	defer stateQueryLock.Unlock()
+	stateQueryLockHeld := true
+	defer func() {
+		if stateQueryLockHeld {
+			stateQueryLock.Unlock()
+		}
+	}()
 
 	// 6. Transition: Running → Paused
 	log.DebugContext(ctx, "pausing VM", "instance_id", id)
@@ -201,6 +206,8 @@ func (m *manager) standbyInstance(
 		return nil, fmt.Errorf("shutdown hypervisor: %w", err)
 	}
 	shutdownSpanEnd(nil)
+	stateQueryLock.Unlock()
+	stateQueryLockHeld = false
 
 	// Firecracker vsock sockets can persist across standby/restore if the process
 	// exits ungracefully. Remove stale sockets before restore attempts.

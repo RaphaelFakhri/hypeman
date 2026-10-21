@@ -667,6 +667,29 @@ func TestDeriveStateCoalescesConcurrentHypervisorQueries(t *testing.T) {
 	assert.EqualValues(t, 1, requests.Load())
 }
 
+func TestDeriveStateDoesNotStartProbeForCanceledContext(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "firecracker.sock")
+	var requests atomic.Int32
+	startFirecrackerInfoServer(t, socketPath, 0, &requests)
+
+	stored := StoredMetadata{
+		Id:             "vm-canceled-query",
+		SocketPath:     socketPath,
+		DataDir:        t.TempDir(),
+		HypervisorType: hypervisor.TypeFirecracker,
+	}
+	m := &manager{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := m.deriveState(ctx, &stored)
+
+	require.Equal(t, StateUnknown, result.State)
+	require.NotNil(t, result.Error)
+	assert.Contains(t, *result.Error, context.Canceled.Error())
+	assert.Zero(t, requests.Load())
+}
+
 func TestDeriveStateSkipsProbeDuringSnapshotOperation(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "firecracker.sock")
 	var requests atomic.Int32
@@ -679,6 +702,7 @@ func TestDeriveStateSkipsProbeDuringSnapshotOperation(t *testing.T) {
 		HypervisorType: hypervisor.TypeFirecracker,
 	}
 	m := &manager{}
+	m.storeCachedHypervisorState(stored.Id, hypervisor.StateRunning)
 	lock := m.hypervisorStateQueryLock(stored.Id)
 	lock.Lock()
 	result := m.deriveState(context.Background(), &stored)

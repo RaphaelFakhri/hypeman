@@ -35,8 +35,9 @@ const (
 	// guest-driven shutdowns promptly, long enough that bursty list calls
 	// collapse onto one underlying socket query.
 	hypervisorStateCacheTTL = 5 * time.Second
-	// getVMInfoTimeout bounds a single hypervisor /vm.info query when the VMM
-	// socket is stalled. Standby snapshots exclude probes with a per-instance lock.
+	// getVMInfoTimeout is the deadline passed to a hypervisor /vm.info query.
+	// Backends with context-aware transports stop at the deadline; synchronous
+	// backends may not.
 	getVMInfoTimeout = 500 * time.Millisecond
 )
 
@@ -150,7 +151,11 @@ func (m *manager) deriveStateWithOptions(ctx context.Context, stored *StoredMeta
 	}
 }
 
-func (m *manager) queryHypervisorState(ctx context.Context, stored *StoredMetadata) (hypervisor.VMState, error, bool) {
+func (m *manager) queryHypervisorState(ctx context.Context, stored *StoredMetadata) (hypervisorStateQueryResult, error) {
+	if err := ctx.Err(); err != nil {
+		return hypervisorStateQueryResult{}, err
+	}
+
 	resultCh := m.hypervisorStateQueries.DoChan(stored.Id, func() (any, error) {
 		lock := m.hypervisorStateQueryLock(stored.Id)
 		if !lock.TryRLock() {
@@ -159,7 +164,7 @@ func (m *manager) queryHypervisorState(ctx context.Context, stored *StoredMetada
 		defer lock.RUnlock()
 
 		if cached, ok := m.loadCachedHypervisorState(stored.Id); ok {
-			return hypervisorStateQueryResult{state: cached}, nil
+			return hypervisorStateQueryResult{state: cached, cacheHit: true}, nil
 		}
 
 		log := logger.FromContext(ctx)
@@ -190,18 +195,18 @@ func (m *manager) queryHypervisorState(ctx context.Context, stored *StoredMetada
 
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err(), false
+		return hypervisorStateQueryResult{}, ctx.Err()
 	case result := <-resultCh:
 		if result.Err != nil {
-			return "", result.Err, false
+			return hypervisorStateQueryResult{}, result.Err
 		}
-		queryResult := result.Val.(hypervisorStateQueryResult)
-		return queryResult.state, nil, queryResult.operationInProgress
+		return result.Val.(hypervisorStateQueryResult), nil
 	}
 }
 
 type hypervisorStateQueryResult struct {
 	state               hypervisor.VMState
+	cacheHit            bool
 	operationInProgress bool
 }
 
