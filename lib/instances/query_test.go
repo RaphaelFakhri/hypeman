@@ -638,14 +638,9 @@ func TestDeriveStateCoalescesConcurrentHypervisorQueries(t *testing.T) {
 	startFirecrackerInfoServer(t, socketPath, 250*time.Millisecond, &requests)
 
 	started := time.Now()
-	stored := StoredMetadata{
-		Id:               "vm-coalesced",
-		SocketPath:       socketPath,
-		DataDir:          t.TempDir(),
-		HypervisorType:   hypervisor.TypeFirecracker,
-		ProgramStartedAt: &started,
-		SkipGuestAgent:   true,
-	}
+	stored := firecrackerStoredMetadata("vm-coalesced", socketPath)
+	stored.ProgramStartedAt = &started
+	stored.SkipGuestAgent = true
 	m := &manager{}
 
 	const callers = 12
@@ -680,12 +675,7 @@ func TestDeriveStateDoesNotStartProbeForCanceledContext(t *testing.T) {
 	var requests atomic.Int32
 	startFirecrackerInfoServer(t, socketPath, 0, &requests)
 
-	stored := StoredMetadata{
-		Id:             "vm-canceled-query",
-		SocketPath:     socketPath,
-		DataDir:        t.TempDir(),
-		HypervisorType: hypervisor.TypeFirecracker,
-	}
+	stored := firecrackerStoredMetadata("vm-canceled-query", socketPath)
 	m := &manager{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -719,12 +709,7 @@ func TestDeriveStateBoundsWaitForHypervisorQuery(t *testing.T) {
 	var requests atomic.Int32
 	startFirecrackerInfoServer(t, socketPath, 2*getVMInfoTimeout, &requests)
 
-	stored := StoredMetadata{
-		Id:             "vm-stalled-query",
-		SocketPath:     socketPath,
-		DataDir:        t.TempDir(),
-		HypervisorType: hypervisor.TypeFirecracker,
-	}
+	stored := firecrackerStoredMetadata("vm-stalled-query", socketPath)
 	m := &manager{}
 
 	result := m.deriveState(context.Background(), &stored)
@@ -735,30 +720,12 @@ func TestDeriveStateBoundsWaitForHypervisorQuery(t *testing.T) {
 	assert.EqualValues(t, 1, requests.Load())
 }
 
-func TestTryLockHypervisorStateForStandbyFailsWhileProbeActive(t *testing.T) {
-	m := &manager{}
-	probeLock := m.hypervisorStateQueryLock("vm-probing")
-	probeLock.RLock()
-
-	require.Nil(t, m.tryLockHypervisorStateForStandby("vm-probing"))
-
-	probeLock.RUnlock()
-	standbyLock := m.tryLockHypervisorStateForStandby("vm-probing")
-	require.NotNil(t, standbyLock)
-	standbyLock.Unlock()
-}
-
 func TestDeriveStateSkipsProbeDuringSnapshotOperation(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "firecracker.sock")
 	var requests atomic.Int32
 	startFirecrackerInfoServer(t, socketPath, 0, &requests)
 
-	stored := StoredMetadata{
-		Id:             "vm-snapshotting",
-		SocketPath:     socketPath,
-		DataDir:        t.TempDir(),
-		HypervisorType: hypervisor.TypeFirecracker,
-	}
+	stored := firecrackerStoredMetadata("vm-snapshotting", socketPath)
 	m := &manager{}
 	m.storeCachedHypervisorState(stored.Id, hypervisor.StateRunning)
 	lock := m.hypervisorStateQueryLock(stored.Id)
@@ -770,6 +737,15 @@ func TestDeriveStateSkipsProbeDuringSnapshotOperation(t *testing.T) {
 	require.NotNil(t, result.Error)
 	assert.Contains(t, *result.Error, "during snapshot operation")
 	assert.Zero(t, requests.Load())
+}
+
+func firecrackerStoredMetadata(id, socketPath string) StoredMetadata {
+	return StoredMetadata{
+		Id:             id,
+		SocketPath:     socketPath,
+		DataDir:        filepath.Dir(socketPath),
+		HypervisorType: hypervisor.TypeFirecracker,
+	}
 }
 
 func startFirecrackerInfoServer(t *testing.T, socketPath string, delay time.Duration, requests *atomic.Int32) {

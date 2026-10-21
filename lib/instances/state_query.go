@@ -11,17 +11,10 @@ import (
 )
 
 const (
-	// hypervisorStateCacheTTL bounds how long a cached hypervisor state may be
-	// reused before a fresh GetVMInfo call is required.
 	hypervisorStateCacheTTL = 5 * time.Second
-	// getVMInfoTimeout is the deadline passed to a hypervisor /vm.info query.
-	// Backends with context-aware transports stop at the deadline; synchronous
-	// backends may not.
-	getVMInfoTimeout = 500 * time.Millisecond
+	getVMInfoTimeout        = 500 * time.Millisecond
 )
 
-// hypervisorStateCacheEntry stores the last observed hypervisor VM state for
-// an instance, used to skip /vm.info queries on hot list paths.
 type hypervisorStateCacheEntry struct {
 	state       hypervisor.VMState
 	refreshedAt time.Time
@@ -126,7 +119,7 @@ type hypervisorStateQueryResult struct {
 	operationInProgress bool
 }
 
-// hypervisorStateQueryLock returns the lock shared by state probes and standby snapshots.
+// hypervisorStateQueryLock is shared by state probes and standby snapshots.
 func (m *manager) hypervisorStateQueryLock(id string) *instanceStateQueryLock {
 	lock, _ := m.hypervisorStateQueryLocks.LoadOrStore(id, &instanceStateQueryLock{})
 	return lock.(*instanceStateQueryLock)
@@ -140,8 +133,7 @@ func (m *manager) tryLockHypervisorStateForStandby(id string) *instanceStateQuer
 	return lock
 }
 
-// loadCachedHypervisorState returns the cached hypervisor state for an instance
-// when present and within the TTL window. Stale entries are treated as a miss.
+// loadCachedHypervisorState returns a non-expired cached state.
 func (m *manager) loadCachedHypervisorState(id string) (hypervisor.VMState, bool) {
 	v, ok := m.hypervisorStateCache.Load(id)
 	if !ok {
@@ -157,9 +149,7 @@ func (m *manager) loadCachedHypervisorState(id string) (hypervisor.VMState, bool
 	return entry.state, true
 }
 
-// storeCachedHypervisorState records the latest known hypervisor state for an
-// instance so subsequent derive_state calls within the TTL window avoid the
-// socket round-trip.
+// storeCachedHypervisorState records a lifecycle-observed hypervisor state.
 func (m *manager) storeCachedHypervisorState(id string, state hypervisor.VMState) {
 	lock := m.hypervisorStateQueryLock(id)
 	lock.cacheMu.Lock()
@@ -185,10 +175,7 @@ func (m *manager) storeQueriedHypervisorState(lock *instanceStateQueryLock, id s
 	return true
 }
 
-// invalidateCachedHypervisorState drops the cached hypervisor state for an
-// instance. Called when the instance no longer has a live hypervisor socket
-// (Stopped, Standby, Deleted) or transitions through a state where the cached
-// value would be stale.
+// invalidateCachedHypervisorState also fences any in-flight state query.
 func (m *manager) invalidateCachedHypervisorState(id string) {
 	lock := m.hypervisorStateQueryLock(id)
 	lock.cacheMu.Lock()
@@ -197,11 +184,7 @@ func (m *manager) invalidateCachedHypervisorState(id string) {
 	lock.cacheMu.Unlock()
 }
 
-// updateCachedHypervisorStateFromInstance reconciles the hypervisor state
-// cache with the post-transition instance state observed by a lifecycle
-// event. Lifecycle events are the source of truth for state changes hypeman
-// itself drives; mirroring them into the cache avoids re-querying /vm.info
-// on the next list call.
+// updateCachedHypervisorStateFromInstance mirrors lifecycle state into the cache.
 func (m *manager) updateCachedHypervisorStateFromInstance(inst *Instance) {
 	if inst == nil {
 		return

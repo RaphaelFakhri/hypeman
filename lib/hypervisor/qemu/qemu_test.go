@@ -39,6 +39,18 @@ func (m *blockingStatusMonitor) Events(context.Context) (<-chan qmp.Event, error
 	return nil, qmp.ErrEventsNotSupported
 }
 
+func awaitTestValue[T any](t *testing.T, ch <-chan T, timeoutMessage string) T {
+	t.Helper()
+	select {
+	case value := <-ch:
+		return value
+	case <-time.After(time.Second):
+		t.Fatal(timeoutMessage)
+		var zero T
+		return zero
+	}
+}
+
 func TestNewClientContextBoundsQMPHandshake(t *testing.T) {
 	listener, err := net.Listen("unix", t.TempDir()+"/qemu.sock")
 	require.NoError(t, err)
@@ -61,20 +73,10 @@ func TestNewClientContextBoundsQMPHandshake(t *testing.T) {
 		result <- err
 	}()
 
-	var conn net.Conn
-	select {
-	case conn = <-accepted:
-	case <-time.After(time.Second):
-		t.Fatal("QMP client did not connect")
-	}
+	conn := awaitTestValue(t, accepted, "QMP client did not connect")
 	defer conn.Close()
 	cancel()
-	select {
-	case err := <-result:
-		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(time.Second):
-		t.Fatal("QMP handshake did not stop after cancellation")
-	}
+	require.ErrorIs(t, awaitTestValue(t, result, "QMP handshake did not stop after cancellation"), context.Canceled)
 }
 
 func TestGetVMInfoClosesStalledQMPConnectionOnContextDeadline(t *testing.T) {
@@ -97,22 +99,9 @@ func TestGetVMInfoClosesStalledQMPConnectionOnContextDeadline(t *testing.T) {
 		result <- err
 	}()
 
-	select {
-	case err := <-result:
-		require.ErrorIs(t, err, context.DeadlineExceeded)
-	case <-time.After(time.Second):
-		t.Fatal("GetVMInfo did not return after its context deadline")
-	}
-	select {
-	case <-monitor.started:
-	case <-time.After(time.Second):
-		t.Fatal("QMP status command did not start")
-	}
-	select {
-	case <-monitor.closed:
-	case <-time.After(time.Second):
-		t.Fatal("QMP connection was not closed after its context deadline")
-	}
+	require.ErrorIs(t, awaitTestValue(t, result, "GetVMInfo did not return after its context deadline"), context.DeadlineExceeded)
+	awaitTestValue(t, monitor.started, "QMP status command did not start")
+	awaitTestValue(t, monitor.closed, "QMP connection was not closed after its context deadline")
 }
 
 func TestGetTargetGuestMemoryBytesUsesSavedConfigOnColdStart(t *testing.T) {
