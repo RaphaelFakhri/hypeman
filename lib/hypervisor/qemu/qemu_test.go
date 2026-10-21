@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -60,30 +61,23 @@ func TestSocketMonitorHandshakeAndCommand(t *testing.T) {
 	serverErr := make(chan error, 1)
 	go func() {
 		conn, err := listener.Accept()
-		if err != nil {
-			serverErr <- err
-			return
+		if err == nil {
+			defer conn.Close()
+			decoder := json.NewDecoder(conn)
+			var command map[string]any
+			for i, response := range []string{`{"QMP":{}}`, `{"return":{}}`, `{"return":{"status":"running"}}`} {
+				if i > 0 {
+					err = decoder.Decode(&command)
+				}
+				if err != nil {
+					break
+				}
+				_, err = io.WriteString(conn, response+"\n")
+				if err != nil {
+					break
+				}
+			}
 		}
-		defer conn.Close()
-		if _, err := conn.Write([]byte("{\"QMP\":{}}\n")); err != nil {
-			serverErr <- err
-			return
-		}
-		decoder := json.NewDecoder(conn)
-		var command map[string]any
-		if err := decoder.Decode(&command); err != nil {
-			serverErr <- err
-			return
-		}
-		if _, err := conn.Write([]byte("{\"return\":{}}\n")); err != nil {
-			serverErr <- err
-			return
-		}
-		if err := decoder.Decode(&command); err != nil {
-			serverErr <- err
-			return
-		}
-		_, err = conn.Write([]byte("{\"return\":{\"status\":\"running\"}}\n"))
 		serverErr <- err
 	}()
 
