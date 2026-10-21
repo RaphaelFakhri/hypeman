@@ -106,19 +106,23 @@ func (m *socketMonitor) Run(command []byte) ([]byte, error) {
 	}
 	select {
 	case response, ok := <-responses:
-		if !ok {
-			return nil, io.EOF
-		}
-		if response.err != nil {
-			return nil, response.err
-		}
-		if err := qmpResponseError(response.data); err != nil {
-			return nil, err
-		}
-		return response.data, nil
+		return response.result(ok)
 	case <-m.disconnect:
 		return nil, net.ErrClosed
 	}
+}
+
+func (r monitorResponse) result(ok bool) ([]byte, error) {
+	if !ok {
+		return nil, io.EOF
+	}
+	if r.err != nil {
+		return nil, r.err
+	}
+	if err := qmpResponseError(r.data); err != nil {
+		return nil, err
+	}
+	return r.data, nil
 }
 
 func (m *socketMonitor) Events(context.Context) (<-chan qmp.Event, error) {
@@ -151,32 +155,44 @@ func (m *socketMonitor) listen() {
 	defer close(m.responses)
 	scanner := bufio.NewScanner(m.conn)
 	for scanner.Scan() {
-		data := append([]byte(nil), scanner.Bytes()...)
-		var event qmp.Event
-		if json.Unmarshal(data, &event) != nil {
-			continue
-		}
-		if event.Event != "" {
-			if m.listeners.Load() > 0 {
-				select {
-				case m.events <- event:
-				case <-m.disconnect:
-					return
-				}
-			}
-			continue
-		}
-		select {
-		case m.responses <- monitorResponse{data: data}:
-		case <-m.disconnect:
+		if !m.dispatchMessage(scanner.Bytes()) {
 			return
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		select {
-		case m.responses <- monitorResponse{err: err}:
-		case <-m.disconnect:
+		m.sendResponse(monitorResponse{err: err})
+	}
+}
+
+func (m *socketMonitor) dispatchMessage(data []byte) bool {
+	var event qmp.Event
+	if json.Unmarshal(data, &event) != nil {
+		return true
+	}
+	if event.Event != "" {
+		if m.listeners.Load() == 0 {
+			return true
 		}
+		return m.sendEvent(event)
+	}
+	return m.sendResponse(monitorResponse{data: append([]byte(nil), data...)})
+}
+
+func (m *socketMonitor) sendEvent(event qmp.Event) bool {
+	select {
+	case m.events <- event:
+		return true
+	case <-m.disconnect:
+		return false
+	}
+}
+
+func (m *socketMonitor) sendResponse(response monitorResponse) bool {
+	select {
+	case m.responses <- response:
+		return true
+	case <-m.disconnect:
+		return false
 	}
 }
 

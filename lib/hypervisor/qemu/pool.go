@@ -62,7 +62,11 @@ func GetOrCreateForTypeContext(ctx context.Context, socketPath string, hyperviso
 		return client, err
 	}
 
-	client, err := newClientContext(ctx, socketPath, requestedProfile)
+	return createPooledClient(ctx, socketPath, requestedProfile, creationLock, generation)
+}
+
+func createPooledClient(ctx context.Context, socketPath string, profile profile, creationLock *clientCreationLock, generation uint64) (*QEMU, error) {
+	client, err := newClientContext(ctx, socketPath, profile)
 	if err != nil {
 		return nil, err
 	}
