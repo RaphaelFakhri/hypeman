@@ -91,10 +91,28 @@ func TestGetVMInfoClosesStalledQMPConnectionOnContextDeadline(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err = hv.GetVMInfo(ctx)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	<-monitor.started
-	<-monitor.closed
+	result := make(chan error, 1)
+	go func() {
+		_, err := hv.GetVMInfo(ctx)
+		result <- err
+	}()
+
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(time.Second):
+		t.Fatal("GetVMInfo did not return after its context deadline")
+	}
+	select {
+	case <-monitor.started:
+	case <-time.After(time.Second):
+		t.Fatal("QMP status command did not start")
+	}
+	select {
+	case <-monitor.closed:
+	case <-time.After(time.Second):
+		t.Fatal("QMP connection was not closed after its context deadline")
+	}
 }
 
 func TestGetTargetGuestMemoryBytesUsesSavedConfigOnColdStart(t *testing.T) {

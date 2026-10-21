@@ -86,7 +86,12 @@ func (m *manager) deriveStateWithOptions(ctx context.Context, stored *StoredMeta
 		errMsg := "hypervisor state unavailable during snapshot operation"
 		return stateResult{State: StateUnknown, Error: &errMsg}
 	}
-	defer stateQueryLock.RUnlock()
+	lockHeld := true
+	defer func() {
+		if lockHeld {
+			stateQueryLock.RUnlock()
+		}
+	}()
 
 	var hvState hypervisor.VMState
 	cacheHit := false
@@ -113,10 +118,30 @@ func (m *manager) deriveStateWithOptions(ctx context.Context, stored *StoredMeta
 	case hypervisor.StateCreated:
 		return stateResult{State: StateCreated}
 	case hypervisor.StateRunning:
+		lock.cacheMu.Lock()
+		generation := lock.generation
+		lock.cacheMu.Unlock()
+		stateQueryLock.RUnlock()
+		lockHeld = false
+
 		hydrated := false
 		if hydrateBootMarkers && stored.MacOS == nil {
 			hydrated = m.hydrateBootMarkersFromLogs(ctx, stored)
 		}
+
+		if !stateQueryLock.TryRLock() {
+			errMsg := "hypervisor state unavailable during snapshot operation"
+			return stateResult{State: StateUnknown, Error: &errMsg}
+		}
+		lockHeld = true
+		lock.cacheMu.Lock()
+		stateUnchanged := lock.generation == generation
+		lock.cacheMu.Unlock()
+		if !stateUnchanged {
+			errMsg := "hypervisor state changed during boot marker hydration"
+			return stateResult{State: StateUnknown, Error: &errMsg}
+		}
+
 		return stateResult{
 			State:               deriveRunningState(stored),
 			BootMarkersHydrated: hydrated,
