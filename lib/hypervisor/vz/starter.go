@@ -37,6 +37,9 @@ func init() {
 	hypervisor.RegisterClientFactory(hypervisor.TypeVZ, func(socketPath string) (hypervisor.Hypervisor, error) {
 		return NewClient(socketPath)
 	})
+	hypervisor.RegisterContextClientFactory(hypervisor.TypeVZ, func(ctx context.Context, socketPath string) (hypervisor.Hypervisor, error) {
+		return NewClientContext(ctx, socketPath)
+	})
 }
 
 var (

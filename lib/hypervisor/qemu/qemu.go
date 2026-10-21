@@ -104,7 +104,8 @@ func (q *QEMU) GetVMInfo(ctx context.Context) (*hypervisor.VMInfo, error) {
 	var status qemu.Status
 	select {
 	case <-ctx.Done():
-		removeClient(q)
+		removeClientAndClose(q)
+		<-statusCh
 		return nil, fmt.Errorf("query status: %w", ctx.Err())
 	case result := <-statusCh:
 		status = result.status

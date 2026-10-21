@@ -3,6 +3,7 @@ package qemu
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/digitalocean/go-qemu/qemu"
@@ -21,19 +22,28 @@ const (
 
 // Client wraps go-qemu's Domain and raw.Monitor with convenience methods.
 type Client struct {
-	domain *qemu.Domain
-	raw    *raw.Monitor
-	mon    *qmp.SocketMonitor
+	domain    *qemu.Domain
+	raw       *raw.Monitor
+	mon       *qmp.SocketMonitor
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewClient creates a new QEMU client connected to the given socket.
 func NewClient(socketPath string) (*Client, error) {
-	return NewClientContext(context.Background(), socketPath)
+	ctx, cancel := context.WithTimeout(context.Background(), qmpConnectTimeout)
+	defer cancel()
+	return NewClientContext(ctx, socketPath)
 }
 
 // NewClientContext creates a QEMU client while bounding socket connection and
 // QMP handshake time by the caller's context.
 func NewClientContext(ctx context.Context, socketPath string) (*Client, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, qmpConnectTimeout)
+		defer cancel()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -62,6 +72,8 @@ func NewClientContext(ctx context.Context, socketPath string) (*Client, error) {
 		}
 	case <-ctx.Done():
 		_ = mon.Disconnect()
+		<-connectCh
+		_ = mon.Disconnect()
 		return nil, fmt.Errorf("connect to qmp: %w", ctx.Err())
 	}
 
@@ -80,7 +92,8 @@ func NewClientContext(ctx context.Context, socketPath string) (*Client, error) {
 
 // Close disconnects from the QMP socket.
 func (c *Client) Close() error {
-	return c.domain.Close()
+	c.closeOnce.Do(func() { c.closeErr = c.domain.Close() })
+	return c.closeErr
 }
 
 // Stop pauses VM execution (QMP 'stop' command).

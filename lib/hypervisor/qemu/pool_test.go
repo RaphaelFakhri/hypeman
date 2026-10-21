@@ -1,11 +1,25 @@
 package qemu
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/kernel/hypeman/lib/hypervisor"
 	"github.com/stretchr/testify/require"
 )
+
+func TestClientCreationLockHonorsContext(t *testing.T) {
+	path := t.TempDir() + "/qemu.sock"
+	release, err := acquireClientCreationLock(context.Background(), path)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err = acquireClientCreationLock(ctx, path)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	release()
+}
 
 func TestRemoveClientDoesNotEvictReplacement(t *testing.T) {
 	socketPath := t.TempDir() + "/qemu.sock"

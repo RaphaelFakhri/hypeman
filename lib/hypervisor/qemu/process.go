@@ -55,6 +55,9 @@ func init() {
 		hypervisor.RegisterClientFactory(t, func(socketPath string) (hypervisor.Hypervisor, error) {
 			return NewForType(socketPath, t)
 		})
+		hypervisor.RegisterContextClientFactory(t, func(ctx context.Context, socketPath string) (hypervisor.Hypervisor, error) {
+			return NewForTypeContext(ctx, socketPath, t)
+		})
 	}
 }
 

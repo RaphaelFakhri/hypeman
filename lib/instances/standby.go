@@ -209,6 +209,7 @@ func (m *manager) standbyInstance(
 		return nil, fmt.Errorf("shutdown hypervisor: %w", err)
 	}
 	shutdownSpanEnd(nil)
+	m.invalidateCachedHypervisorState(id)
 	stateQueryLock.Unlock()
 	stateQueryLockHeld = false
 

@@ -14,7 +14,6 @@ import (
 	"github.com/kernel/hypeman/lib/egressproxy"
 	"github.com/kernel/hypeman/lib/guestmemory"
 	"github.com/kernel/hypeman/lib/hypervisor"
-	qemuhypervisor "github.com/kernel/hypeman/lib/hypervisor/qemu"
 	"github.com/kernel/hypeman/lib/images"
 	"github.com/kernel/hypeman/lib/logger"
 	"github.com/kernel/hypeman/lib/network"
@@ -379,14 +378,7 @@ func (m *manager) getHypervisor(socketPath string, hvType hypervisor.Type) (hype
 }
 
 func (m *manager) getHypervisorForStateQuery(ctx context.Context, socketPath string, hvType hypervisor.Type) (hypervisor.Hypervisor, error) {
-	if hvType == hypervisor.TypeQEMU || hvType == hypervisor.TypeQEMUMicroVM {
-		client, err := qemuhypervisor.NewForTypeContext(ctx, socketPath, hvType)
-		if err != nil {
-			return nil, err
-		}
-		return hypervisor.WrapHypervisor(hvType, client), nil
-	}
-	return m.getHypervisor(socketPath, hvType)
+	return hypervisor.NewClientContext(ctx, hvType, socketPath)
 }
 
 // getVMStarter returns the VM starter for the given hypervisor type.

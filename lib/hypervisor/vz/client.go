@@ -29,6 +29,19 @@ type Client struct {
 
 // NewClient creates a new vz shim client.
 func NewClient(socketPath string) (*Client, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return NewClientContext(ctx, socketPath)
+}
+
+// NewClientContext creates a VZ shim client and checks connectivity using the
+// caller's context.
+func NewClientContext(ctx context.Context, socketPath string) (*Client, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
 	dialer := &net.Dialer{}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -47,10 +60,6 @@ func NewClient(socketPath string) (*Client, error) {
 	longRunningHTTPClient := &http.Client{
 		Transport: transport,
 	}
-
-	// Verify connectivity with a short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://vz-shim/api/v1/vmm.ping", nil)
 	if err != nil {
