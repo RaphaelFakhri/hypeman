@@ -216,6 +216,14 @@ func (m *manager) hypervisorStateQueryLock(id string) *sync.RWMutex {
 	return lock.(*sync.RWMutex)
 }
 
+func (m *manager) tryLockHypervisorStateForStandby(id string) *sync.RWMutex {
+	lock := m.hypervisorStateQueryLock(id)
+	if !lock.TryLock() {
+		return nil
+	}
+	return lock
+}
+
 // loadCachedHypervisorState returns the cached hypervisor state for an instance
 // when present and within the TTL window. Stale entries are treated as a miss.
 func (m *manager) loadCachedHypervisorState(id string) (hypervisor.VMState, bool) {

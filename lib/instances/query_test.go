@@ -635,7 +635,7 @@ func TestHypervisorStateCache_TTL(t *testing.T) {
 func TestDeriveStateCoalescesConcurrentHypervisorQueries(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "firecracker.sock")
 	var requests atomic.Int32
-	startFirecrackerInfoServer(t, socketPath, 50*time.Millisecond, &requests)
+	startFirecrackerInfoServer(t, socketPath, 250*time.Millisecond, &requests)
 
 	started := time.Now()
 	stored := StoredMetadata{
@@ -650,14 +650,22 @@ func TestDeriveStateCoalescesConcurrentHypervisorQueries(t *testing.T) {
 
 	const callers = 12
 	var wg sync.WaitGroup
+	ready := make(chan struct{}, callers)
+	start := make(chan struct{})
 	results := make(chan stateResult, callers)
 	for range callers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			ready <- struct{}{}
+			<-start
 			results <- m.deriveState(context.Background(), &stored)
 		}()
 	}
+	for range callers {
+		<-ready
+	}
+	close(start)
 	wg.Wait()
 	close(results)
 
@@ -688,6 +696,19 @@ func TestDeriveStateDoesNotStartProbeForCanceledContext(t *testing.T) {
 	require.NotNil(t, result.Error)
 	assert.Contains(t, *result.Error, context.Canceled.Error())
 	assert.Zero(t, requests.Load())
+}
+
+func TestTryLockHypervisorStateForStandbyFailsWhileProbeActive(t *testing.T) {
+	m := &manager{}
+	probeLock := m.hypervisorStateQueryLock("vm-probing")
+	probeLock.RLock()
+
+	require.Nil(t, m.tryLockHypervisorStateForStandby("vm-probing"))
+
+	probeLock.RUnlock()
+	standbyLock := m.tryLockHypervisorStateForStandby("vm-probing")
+	require.NotNil(t, standbyLock)
+	standbyLock.Unlock()
 }
 
 func TestDeriveStateSkipsProbeDuringSnapshotOperation(t *testing.T) {
