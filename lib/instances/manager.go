@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/sync/singleflight"
 )
 
 type Manager interface {
@@ -177,10 +178,10 @@ type manager struct {
 	forkMetadataMu            sync.Mutex
 	macOSBootMu               sync.Mutex // Serialize admission for preserved Mac identities.
 	macOSOnly                 bool
-	bootMarkerScans           sync.Map      // map[string]time.Time next allowed boot-marker rescan
-	hypervisorStateCache      sync.Map      // map[string]hypervisorStateCacheEntry - last observed hypervisor state per instance
-	hypervisorStateQueryLocks sync.Map      // map[string]*instanceStateQueryLock - serializes state probes against snapshots
-	hypervisorStateQueries    sync.Map      // map[string]*hypervisorStateQueryFlight
+	bootMarkerScans           sync.Map // map[string]time.Time next allowed boot-marker rescan
+	hypervisorStateCache      sync.Map // map[string]hypervisorStateCacheEntry - last observed hypervisor state per instance
+	hypervisorStateQueryLocks sync.Map // map[string]*instanceStateQueryLock - serializes state probes against snapshots
+	hypervisorStateQueries    singleflight.Group
 	hostTopology              *HostTopology // Cached host CPU topology
 	metrics                   *Metrics
 	meter                     metric.Meter

@@ -26,55 +26,40 @@ type instanceStateQueryLock struct {
 	generation uint64
 }
 
-type hypervisorStateQueryFlight struct {
-	done   chan struct{}
-	result hypervisorStateQueryResult
-	err    error
-}
-
 func (m *manager) queryHypervisorState(ctx context.Context, stored *StoredMetadata) (hypervisorStateQueryResult, error) {
 	if err := ctx.Err(); err != nil {
 		return hypervisorStateQueryResult{}, err
 	}
-
 	lock := m.hypervisorStateQueryLock(stored.Id)
 	if !lock.TryRLock() {
 		return hypervisorStateQueryResult{operationInProgress: true}, nil
 	}
 	defer lock.RUnlock()
 
-	flight := &hypervisorStateQueryFlight{done: make(chan struct{})}
-	value, loaded := m.hypervisorStateQueries.LoadOrStore(stored.Id, flight)
-	flight = value.(*hypervisorStateQueryFlight)
-	if !loaded {
-		go m.runHypervisorStateQuery(context.WithoutCancel(ctx), stored, lock, flight)
-	}
-
 	waitCtx, cancelWait := context.WithTimeout(ctx, getVMInfoTimeout)
 	defer cancelWait()
+	result := m.hypervisorStateQueries.DoChan(stored.Id, func() (any, error) {
+		return m.runHypervisorStateQuery(context.WithoutCancel(ctx), stored, lock)
+	})
 	select {
 	case <-waitCtx.Done():
 		return hypervisorStateQueryResult{}, waitCtx.Err()
-	case <-flight.done:
-		return flight.result, flight.err
+	case result := <-result:
+		if result.Err != nil {
+			return hypervisorStateQueryResult{}, result.Err
+		}
+		return result.Val.(hypervisorStateQueryResult), nil
 	}
 }
 
-func (m *manager) runHypervisorStateQuery(ctx context.Context, stored *StoredMetadata, lock *instanceStateQueryLock, flight *hypervisorStateQueryFlight) {
-	defer func() {
-		close(flight.done)
-		m.hypervisorStateQueries.CompareAndDelete(stored.Id, flight)
-	}()
-
+func (m *manager) runHypervisorStateQuery(ctx context.Context, stored *StoredMetadata, lock *instanceStateQueryLock) (hypervisorStateQueryResult, error) {
 	if !lock.TryRLock() {
-		flight.result = hypervisorStateQueryResult{operationInProgress: true}
-		return
+		return hypervisorStateQueryResult{operationInProgress: true}, nil
 	}
 	defer lock.RUnlock()
 
 	if cached, ok := m.loadCachedHypervisorState(stored.Id); ok {
-		flight.result = hypervisorStateQueryResult{state: cached, cacheHit: true}
-		return
+		return hypervisorStateQueryResult{state: cached, cacheHit: true}, nil
 	}
 
 	lock.cacheMu.Lock()
@@ -92,8 +77,7 @@ func (m *manager) runHypervisorStateQuery(ctx context.Context, stored *StoredMet
 			"socket", stored.SocketPath,
 			"error", err,
 		)
-		flight.err = fmt.Errorf("failed to create hypervisor client: %w", err)
-		return
+		return hypervisorStateQueryResult{}, fmt.Errorf("failed to create hypervisor client: %w", err)
 	}
 
 	info, err := hv.GetVMInfo(queryCtx)
@@ -103,14 +87,12 @@ func (m *manager) runHypervisorStateQuery(ctx context.Context, stored *StoredMet
 			"socket", stored.SocketPath,
 			"error", err,
 		)
-		flight.err = fmt.Errorf("failed to query hypervisor: %w", err)
-		return
+		return hypervisorStateQueryResult{}, fmt.Errorf("failed to query hypervisor: %w", err)
 	}
 	if !m.storeQueriedHypervisorState(lock, stored.Id, info.State, generation) {
-		flight.err = fmt.Errorf("hypervisor state changed during query")
-		return
+		return hypervisorStateQueryResult{}, fmt.Errorf("hypervisor state changed during query")
 	}
-	flight.result = hypervisorStateQueryResult{state: info.State}
+	return hypervisorStateQueryResult{state: info.State}, nil
 }
 
 type hypervisorStateQueryResult struct {
