@@ -467,41 +467,16 @@ func NewVsockDialer(hvType Type, vsockSocket string, vsockCID int64) (VsockDiale
 // ClientFactory creates Hypervisor client instances for a hypervisor type.
 type ClientFactory func(socketPath string) (Hypervisor, error)
 
-// ContextClientFactory creates a Hypervisor client using a caller context.
-type ContextClientFactory func(context.Context, string) (Hypervisor, error)
-
 // clientFactories maps hypervisor types to their client factories.
-var (
-	clientFactories        = make(map[Type]ClientFactory)
-	contextClientFactories = make(map[Type]ContextClientFactory)
-)
+var clientFactories = make(map[Type]ClientFactory)
 
 // RegisterClientFactory registers a Hypervisor client factory.
 func RegisterClientFactory(t Type, factory ClientFactory) {
 	clientFactories[t] = factory
 }
 
-// RegisterContextClientFactory registers a client factory that can honor query
-// deadlines during connection setup.
-func RegisterContextClientFactory(t Type, factory ContextClientFactory) {
-	contextClientFactories[t] = factory
-}
-
 // NewClient creates a Hypervisor client for the given type and socket.
 func NewClient(hvType Type, socketPath string) (Hypervisor, error) {
-	return NewClientContext(context.Background(), hvType, socketPath)
-}
-
-// NewClientContext creates a Hypervisor client using a registered context-aware
-// factory when available.
-func NewClientContext(ctx context.Context, hvType Type, socketPath string) (Hypervisor, error) {
-	if factory, ok := contextClientFactories[hvType]; ok {
-		client, err := factory(ctx, socketPath)
-		if err != nil {
-			return nil, err
-		}
-		return WrapHypervisor(hvType, client), nil
-	}
 	factory, ok := clientFactories[hvType]
 	if !ok {
 		return nil, fmt.Errorf("no client factory registered for hypervisor type: %s", hvType)

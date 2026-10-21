@@ -70,7 +70,7 @@ func (m *manager) runHypervisorStateQuery(ctx context.Context, stored *StoredMet
 	queryCtx, cancelQuery := context.WithTimeout(ctx, getVMInfoTimeout)
 	defer cancelQuery()
 
-	hv, err := m.getHypervisorForStateQuery(queryCtx, stored.SocketPath, stored.HypervisorType)
+	hv, err := m.getHypervisor(stored.SocketPath, stored.HypervisorType)
 	if err != nil {
 		log.WarnContext(ctx, "failed to determine instance state",
 			"instance_id", stored.Id,

@@ -35,19 +35,9 @@ func NewForType(socketPath string, hypervisorType hypervisor.Type) (*QEMU, error
 	return GetOrCreateForType(socketPath, hypervisorType)
 }
 
-// NewForTypeContext returns a QEMU client using the caller's context when a
-// pooled client must be created.
-func NewForTypeContext(ctx context.Context, socketPath string, hypervisorType hypervisor.Type) (*QEMU, error) {
-	return GetOrCreateForTypeContext(ctx, socketPath, hypervisorType)
-}
-
 // newClient creates a new QEMU client (internal, used by pool).
 func newClient(socketPath string, selectedProfile profile) (*QEMU, error) {
-	return newClientContext(context.Background(), socketPath, selectedProfile)
-}
-
-func newClientContext(ctx context.Context, socketPath string, selectedProfile profile) (*QEMU, error) {
-	client, err := NewClientContext(ctx, socketPath)
+	client, err := NewClient(socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("create qemu client: %w", err)
 	}
@@ -87,32 +77,10 @@ func (q *QEMU) Shutdown(ctx context.Context) error {
 
 // GetVMInfo returns current VM state.
 func (q *QEMU) GetVMInfo(ctx context.Context) (*hypervisor.VMInfo, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	type statusResult struct {
-		status qemu.Status
-		err    error
-	}
-	statusCh := make(chan statusResult, 1)
-	go func() {
-		status, err := q.client.Status()
-		statusCh <- statusResult{status: status, err: err}
-	}()
-
-	var status qemu.Status
-	select {
-	case <-ctx.Done():
-		removeClientAndClose(q)
-		<-statusCh
-		return nil, fmt.Errorf("query status: %w", ctx.Err())
-	case result := <-statusCh:
-		status = result.status
-		if result.err != nil {
-			removeClient(q)
-			return nil, fmt.Errorf("query status: %w", result.err)
-		}
+	status, err := q.client.Status()
+	if err != nil {
+		removeClient(q)
+		return nil, fmt.Errorf("query status: %w", err)
 	}
 
 	// Map qemu.Status to hypervisor.VMState using typed enum comparison

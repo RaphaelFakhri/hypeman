@@ -378,10 +378,6 @@ func (m *manager) getHypervisor(socketPath string, hvType hypervisor.Type) (hype
 	return hypervisor.NewClient(hvType, socketPath)
 }
 
-func (m *manager) getHypervisorForStateQuery(ctx context.Context, socketPath string, hvType hypervisor.Type) (hypervisor.Hypervisor, error) {
-	return hypervisor.NewClientContext(ctx, hvType, socketPath)
-}
-
 // getVMStarter returns the VM starter for the given hypervisor type.
 func (m *manager) getVMStarter(hvType hypervisor.Type) (hypervisor.VMStarter, error) {
 	starter, ok := m.vmStarters[hvType]

@@ -3,7 +3,6 @@ package qemu
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/digitalocean/go-qemu/qemu"
@@ -22,42 +21,38 @@ const (
 
 // Client wraps go-qemu's Domain and raw.Monitor with convenience methods.
 type Client struct {
-	domain    *qemu.Domain
-	raw       *raw.Monitor
-	closeOnce sync.Once
-	closeErr  error
+	domain *qemu.Domain
+	raw    *raw.Monitor
+	mon    *qmp.SocketMonitor
 }
 
 // NewClient creates a new QEMU client connected to the given socket.
 func NewClient(socketPath string) (*Client, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), qmpConnectTimeout)
-	defer cancel()
-	return NewClientContext(ctx, socketPath)
-}
-
-// NewClientContext creates a QEMU client using the caller's context for dial and handshake.
-func NewClientContext(ctx context.Context, socketPath string) (*Client, error) {
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, qmpConnectTimeout)
-		defer cancel()
-	}
-	mon, err := newSocketMonitor(ctx, socketPath)
+	mon, err := qmp.NewSocketMonitor("unix", socketPath, qmpConnectTimeout)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create socket monitor: %w", err)
 	}
+
+	if err := mon.Connect(); err != nil {
+		return nil, fmt.Errorf("connect to qmp: %w", err)
+	}
+
 	domain, err := qemu.NewDomain(mon, "vm")
 	if err != nil {
-		_ = mon.Disconnect()
+		mon.Disconnect()
 		return nil, fmt.Errorf("create domain: %w", err)
 	}
-	return &Client{domain: domain, raw: raw.NewMonitor(mon)}, nil
+
+	return &Client{
+		domain: domain,
+		raw:    raw.NewMonitor(mon),
+		mon:    mon,
+	}, nil
 }
 
 // Close disconnects from the QMP socket.
 func (c *Client) Close() error {
-	c.closeOnce.Do(func() { c.closeErr = c.domain.Close() })
-	return c.closeErr
+	return c.domain.Close()
 }
 
 // Stop pauses VM execution (QMP 'stop' command).
