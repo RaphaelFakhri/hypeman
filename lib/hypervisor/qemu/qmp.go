@@ -51,7 +51,10 @@ func NewClientContext(ctx context.Context, socketPath string) (*Client, error) {
 	if deadline, ok := ctx.Deadline(); ok {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return nil, ctx.Err()
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return nil, context.DeadlineExceeded
 		}
 		if remaining < connectTimeout {
 			connectTimeout = remaining

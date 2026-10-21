@@ -9,8 +9,9 @@ import (
 )
 
 type clientCreationLock struct {
-	token chan struct{}
-	refs  int
+	token      chan struct{}
+	refs       int
+	generation uint64
 }
 
 // clientPool manages singleton QMP connections per socket path.
@@ -48,7 +49,7 @@ func GetOrCreateForTypeContext(ctx context.Context, socketPath string, hyperviso
 		return client, err
 	}
 
-	release, err := acquireClientCreationLock(ctx, socketPath)
+	release, creationLock, generation, err := acquireClientCreationLock(ctx, socketPath)
 	if err != nil {
 		return nil, err
 	}
@@ -67,6 +68,16 @@ func GetOrCreateForTypeContext(ctx context.Context, socketPath string, hyperviso
 	}
 
 	clientPool.Lock()
+	if existing := clientPool.clients[socketPath]; existing != nil {
+		clientPool.Unlock()
+		closeClientAsync(client)
+		return existing, nil
+	}
+	if creationLock.generation != generation {
+		clientPool.Unlock()
+		closeClientAsync(client)
+		return nil, fmt.Errorf("QEMU client creation for %s was invalidated by a lifecycle reset", socketPath)
+	}
 	clientPool.clients[socketPath] = client
 	clientPool.Unlock()
 	return client, nil
@@ -85,7 +96,7 @@ func pooledClient(socketPath string, hypervisorType hypervisor.Type) (*QEMU, err
 	return client, nil
 }
 
-func acquireClientCreationLock(ctx context.Context, socketPath string) (func(), error) {
+func acquireClientCreationLock(ctx context.Context, socketPath string) (func(), *clientCreationLock, uint64, error) {
 	clientPool.Lock()
 	lock := clientPool.locks[socketPath]
 	if lock == nil {
@@ -94,22 +105,31 @@ func acquireClientCreationLock(ctx context.Context, socketPath string) (func(), 
 		clientPool.locks[socketPath] = lock
 	}
 	lock.refs++
+	generation := lock.generation
 	clientPool.Unlock()
 
 	select {
 	case <-ctx.Done():
 		releaseClientCreationReference(socketPath, lock)
-		return nil, ctx.Err()
+		return nil, nil, 0, ctx.Err()
 	case <-lock.token:
 		if err := ctx.Err(); err != nil {
 			lock.token <- struct{}{}
 			releaseClientCreationReference(socketPath, lock)
-			return nil, err
+			return nil, nil, 0, err
+		}
+		clientPool.RLock()
+		invalidated := lock.generation != generation
+		clientPool.RUnlock()
+		if invalidated {
+			lock.token <- struct{}{}
+			releaseClientCreationReference(socketPath, lock)
+			return nil, nil, 0, fmt.Errorf("QEMU client creation for %s was invalidated by a lifecycle reset", socketPath)
 		}
 		return func() {
 			lock.token <- struct{}{}
 			releaseClientCreationReference(socketPath, lock)
-		}, nil
+		}, lock, generation, nil
 	}
 }
 
@@ -130,7 +150,14 @@ func poolTypeMismatchError(socketPath string, cached, requested hypervisor.Type)
 // same socket path. Disconnect happens outside the pool lock and stale users
 // can only remove their own client generation.
 func resetClient(socketPath string) {
-	client := takeClient(socketPath, nil)
+	clientPool.Lock()
+	if lock := clientPool.locks[socketPath]; lock != nil {
+		lock.generation++
+	}
+	client := clientPool.clients[socketPath]
+	delete(clientPool.clients, socketPath)
+	clientPool.Unlock()
+
 	closeClientAsync(client)
 }
 

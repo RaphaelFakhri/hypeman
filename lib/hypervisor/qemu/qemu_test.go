@@ -44,21 +44,37 @@ func TestNewClientContextBoundsQMPHandshake(t *testing.T) {
 	require.NoError(t, err)
 	defer listener.Close()
 
-	accepted := make(chan struct{})
+	accepted := make(chan net.Conn, 1)
 	go func() {
 		conn, err := listener.Accept()
 		if err == nil {
-			defer conn.Close()
-			close(accepted)
+			accepted <- conn
 			_, _ = conn.Read(make([]byte, 1))
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, err = NewClientContext(ctx, listener.Addr().String())
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	<-accepted
+	result := make(chan error, 1)
+	go func() {
+		_, err := NewClientContext(ctx, listener.Addr().String())
+		result <- err
+	}()
+
+	var conn net.Conn
+	select {
+	case conn = <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("QMP client did not connect")
+	}
+	defer conn.Close()
+	cancel()
+	select {
+	case err := <-result:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("QMP handshake did not stop after cancellation")
+	}
 }
 
 func TestGetVMInfoClosesStalledQMPConnectionOnContextDeadline(t *testing.T) {
