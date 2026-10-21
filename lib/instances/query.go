@@ -82,13 +82,15 @@ func (m *manager) deriveStateWithOptions(ctx context.Context, stored *StoredMeta
 	// cache (populated by lifecycle events and prior queries) and falling
 	// back to a coalesced /vm.info call with a bounded caller wait.
 	stateQueryLock := m.hypervisorStateQueryLock(stored.Id)
+	if !stateQueryLock.TryRLock() {
+		errMsg := "hypervisor state unavailable during snapshot operation"
+		return stateResult{State: StateUnknown, Error: &errMsg}
+	}
+	defer stateQueryLock.RUnlock()
+
 	var hvState hypervisor.VMState
 	cacheHit := false
-	if stateQueryLock.TryRLock() {
-		hvState, cacheHit = m.loadCachedHypervisorState(stored.Id)
-		stateQueryLock.RUnlock()
-	}
-	if !cacheHit {
+	if hvState, cacheHit = m.loadCachedHypervisorState(stored.Id); !cacheHit {
 		queryResult, err := m.queryHypervisorState(ctx, stored)
 		if err != nil {
 			if macOSShimGone(stored, err) {
