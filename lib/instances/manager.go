@@ -14,6 +14,7 @@ import (
 	"github.com/kernel/hypeman/lib/egressproxy"
 	"github.com/kernel/hypeman/lib/guestmemory"
 	"github.com/kernel/hypeman/lib/hypervisor"
+	qemuhypervisor "github.com/kernel/hypeman/lib/hypervisor/qemu"
 	"github.com/kernel/hypeman/lib/images"
 	"github.com/kernel/hypeman/lib/logger"
 	"github.com/kernel/hypeman/lib/network"
@@ -375,6 +376,17 @@ func (m *manager) notifyLifecycleDelete(ctx context.Context, instanceID string) 
 // Used for connecting to already-running VMs (e.g., for state queries).
 func (m *manager) getHypervisor(socketPath string, hvType hypervisor.Type) (hypervisor.Hypervisor, error) {
 	return hypervisor.NewClient(hvType, socketPath)
+}
+
+func (m *manager) getHypervisorForStateQuery(ctx context.Context, socketPath string, hvType hypervisor.Type) (hypervisor.Hypervisor, error) {
+	if hvType == hypervisor.TypeQEMU || hvType == hypervisor.TypeQEMUMicroVM {
+		client, err := qemuhypervisor.NewForTypeContext(ctx, socketPath, hvType)
+		if err != nil {
+			return nil, err
+		}
+		return hypervisor.WrapHypervisor(hvType, client), nil
+	}
+	return m.getHypervisor(socketPath, hvType)
 }
 
 // getVMStarter returns the VM starter for the given hypervisor type.

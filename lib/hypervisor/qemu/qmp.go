@@ -28,13 +28,41 @@ type Client struct {
 
 // NewClient creates a new QEMU client connected to the given socket.
 func NewClient(socketPath string) (*Client, error) {
-	mon, err := qmp.NewSocketMonitor("unix", socketPath, qmpConnectTimeout)
+	return NewClientContext(context.Background(), socketPath)
+}
+
+// NewClientContext creates a QEMU client while bounding socket connection and
+// QMP handshake time by the caller's context.
+func NewClientContext(ctx context.Context, socketPath string) (*Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	connectTimeout := qmpConnectTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, ctx.Err()
+		}
+		if remaining < connectTimeout {
+			connectTimeout = remaining
+		}
+	}
+	mon, err := qmp.NewSocketMonitor("unix", socketPath, connectTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("create socket monitor: %w", err)
 	}
 
-	if err := mon.Connect(); err != nil {
-		return nil, fmt.Errorf("connect to qmp: %w", err)
+	connectCh := make(chan error, 1)
+	go func() { connectCh <- mon.Connect() }()
+	select {
+	case err := <-connectCh:
+		if err != nil {
+			_ = mon.Disconnect()
+			return nil, fmt.Errorf("connect to qmp: %w", err)
+		}
+	case <-ctx.Done():
+		_ = mon.Disconnect()
+		return nil, fmt.Errorf("connect to qmp: %w", ctx.Err())
 	}
 
 	domain, err := qemu.NewDomain(mon, "vm")

@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"context"
 	"fmt"
 	"sync"
 
@@ -25,6 +26,12 @@ func GetOrCreate(socketPath string) (*QEMU, error) {
 
 // GetOrCreateForType returns a QEMU client with the requested backend identity.
 func GetOrCreateForType(socketPath string, hypervisorType hypervisor.Type) (*QEMU, error) {
+	return GetOrCreateForTypeContext(context.Background(), socketPath, hypervisorType)
+}
+
+// GetOrCreateForTypeContext returns the pooled client or creates one using the
+// caller's context for socket connection and QMP handshake.
+func GetOrCreateForTypeContext(ctx context.Context, socketPath string, hypervisorType hypervisor.Type) (*QEMU, error) {
 	requestedProfile, err := profileForType(hypervisorType)
 	if err != nil {
 		return nil, err
@@ -49,7 +56,7 @@ func GetOrCreateForType(socketPath string, hypervisorType hypervisor.Type) (*QEM
 		return client, nil
 	}
 
-	client, err := newClient(socketPath, requestedProfile)
+	client, err := newClientContext(ctx, socketPath, requestedProfile)
 	if err != nil {
 		clientPool.Unlock()
 		return nil, err
