@@ -115,7 +115,7 @@ func (m *manager) standbyInstance(
 	// Keep state probes out of the VMM socket until it has been shut down.
 	stateQueryLock := m.tryLockHypervisorStateForStandby(id)
 	if stateQueryLock == nil {
-		return nil, fmt.Errorf("hypervisor state operation is in progress; retry standby")
+		return nil, fmt.Errorf("%w: hypervisor state operation is in progress; retry standby", ErrInvalidState)
 	}
 	stateQueryLockHeld := true
 	defer func() {

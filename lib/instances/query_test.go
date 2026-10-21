@@ -698,6 +698,27 @@ func TestDeriveStateDoesNotStartProbeForCanceledContext(t *testing.T) {
 	assert.Zero(t, requests.Load())
 }
 
+func TestDeriveStateBoundsWaitForHypervisorQuery(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "firecracker.sock")
+	var requests atomic.Int32
+	startFirecrackerInfoServer(t, socketPath, 2*getVMInfoTimeout, &requests)
+
+	stored := StoredMetadata{
+		Id:             "vm-stalled-query",
+		SocketPath:     socketPath,
+		DataDir:        t.TempDir(),
+		HypervisorType: hypervisor.TypeFirecracker,
+	}
+	m := &manager{}
+
+	result := m.deriveState(context.Background(), &stored)
+
+	require.Equal(t, StateUnknown, result.State)
+	require.NotNil(t, result.Error)
+	assert.Contains(t, *result.Error, context.DeadlineExceeded.Error())
+	assert.EqualValues(t, 1, requests.Load())
+}
+
 func TestTryLockHypervisorStateForStandbyFailsWhileProbeActive(t *testing.T) {
 	m := &manager{}
 	probeLock := m.hypervisorStateQueryLock("vm-probing")
