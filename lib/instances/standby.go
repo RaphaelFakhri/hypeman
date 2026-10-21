@@ -133,10 +133,19 @@ func (m *manager) standbyInstance(
 	)
 	if err := hv.Pause(pauseCtx); err != nil {
 		pauseSpanEnd(err)
+		m.invalidateCachedHypervisorState(id)
 		log.ErrorContext(ctx, "failed to pause VM", "instance_id", id, "error", err)
 		return nil, fmt.Errorf("pause vm failed: %w", err)
 	}
 	pauseSpanEnd(nil)
+	resumeAfterStandbyFailure := func(message string) {
+		if resumeErr := hv.Resume(ctx); resumeErr != nil {
+			m.invalidateCachedHypervisorState(id)
+			log.ErrorContext(ctx, message, "instance_id", id, "error", resumeErr)
+			return
+		}
+		m.storeCachedHypervisorState(id, hypervisor.StateRunning)
+	}
 
 	// 7. Create snapshot
 	snapshotDir := m.paths.InstanceSnapshotLatest(id)
@@ -147,18 +156,14 @@ func (m *manager) standbyInstance(
 		var err error
 		promotedExistingBase, err = prepareRetainedSnapshotTarget(snapshotDir, retainedBaseDir)
 		if err != nil {
-			if resumeErr := hv.Resume(ctx); resumeErr != nil {
-				log.ErrorContext(ctx, "failed to resume VM after retained snapshot target preparation error", "instance_id", id, "error", resumeErr)
-			}
+			resumeAfterStandbyFailure("failed to resume VM after retained snapshot target preparation error")
 			return nil, fmt.Errorf("prepare retained snapshot target: %w", err)
 		}
 		// The diff snapshot below writes dirty pages into the mem-file in
 		// place; if fanout forks still hardlink its inode, replace it with a
 		// private copy first so their memory is never mutated.
 		if err := ensureExclusiveSnapshotMemoryOwnership(ctx, snapshotDir); err != nil {
-			if resumeErr := hv.Resume(ctx); resumeErr != nil {
-				log.ErrorContext(ctx, "failed to resume VM after snapshot memory unshare error", "instance_id", id, "error", resumeErr)
-			}
+			resumeAfterStandbyFailure("failed to resume VM after snapshot memory unshare error")
 			if promotedExistingBase {
 				if rollbackErr := discardPromotedRetainedSnapshotTarget(snapshotDir); rollbackErr != nil {
 					log.WarnContext(ctx, "failed to discard promoted snapshot target after unshare error", "instance_id", id, "error", rollbackErr)
@@ -178,9 +183,7 @@ func (m *manager) standbyInstance(
 		snapshotSpanEnd(err)
 		// Snapshot failed - try to resume VM
 		log.ErrorContext(ctx, "snapshot failed, attempting to resume VM", "instance_id", id, "error", err)
-		if resumeErr := hv.Resume(ctx); resumeErr != nil {
-			log.ErrorContext(ctx, "failed to resume VM after snapshot error", "instance_id", id, "error", resumeErr)
-		}
+		resumeAfterStandbyFailure("failed to resume VM after snapshot error")
 		if promotedExistingBase {
 			if rollbackErr := discardPromotedRetainedSnapshotTarget(snapshotDir); rollbackErr != nil {
 				log.WarnContext(ctx, "failed to discard promoted snapshot target after snapshot error", "instance_id", id, "error", rollbackErr)
@@ -202,9 +205,7 @@ func (m *manager) standbyInstance(
 		// The hypervisor may still be running: releasing its TAP or clearing
 		// its identity now would orphan a live VMM. The snapshot on disk is
 		// harmless and a retried standby redoes it.
-		if resumeErr := hv.Resume(ctx); resumeErr != nil {
-			log.ErrorContext(ctx, "failed to resume VM after shutdown error", "instance_id", id, "error", resumeErr)
-		}
+		resumeAfterStandbyFailure("failed to resume VM after shutdown error")
 		return nil, fmt.Errorf("shutdown hypervisor: %w", err)
 	}
 	shutdownSpanEnd(nil)

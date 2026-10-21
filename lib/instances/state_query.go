@@ -27,6 +27,12 @@ type hypervisorStateCacheEntry struct {
 	refreshedAt time.Time
 }
 
+type instanceStateQueryLock struct {
+	sync.RWMutex
+	cacheMu    sync.Mutex
+	generation uint64
+}
+
 func (m *manager) queryHypervisorState(ctx context.Context, stored *StoredMetadata) (hypervisorStateQueryResult, error) {
 	if err := ctx.Err(); err != nil {
 		return hypervisorStateQueryResult{}, err
@@ -45,6 +51,10 @@ func (m *manager) queryHypervisorState(ctx context.Context, stored *StoredMetada
 		if cached, ok := m.loadCachedHypervisorState(stored.Id); ok {
 			return hypervisorStateQueryResult{state: cached, cacheHit: true}, nil
 		}
+
+		lock.cacheMu.Lock()
+		generation := lock.generation
+		lock.cacheMu.Unlock()
 
 		log := logger.FromContext(ctx)
 		queryCtx, cancelQuery := context.WithTimeout(context.WithoutCancel(ctx), getVMInfoTimeout)
@@ -69,7 +79,9 @@ func (m *manager) queryHypervisorState(ctx context.Context, stored *StoredMetada
 			)
 			return nil, fmt.Errorf("failed to query hypervisor: %w", err)
 		}
-		m.storeCachedHypervisorState(stored.Id, info.State)
+		if !m.storeQueriedHypervisorState(lock, stored.Id, info.State, generation) {
+			return nil, fmt.Errorf("hypervisor state changed during query")
+		}
 		return hypervisorStateQueryResult{state: info.State}, nil
 	})
 
@@ -91,12 +103,12 @@ type hypervisorStateQueryResult struct {
 }
 
 // hypervisorStateQueryLock returns the lock shared by state probes and standby snapshots.
-func (m *manager) hypervisorStateQueryLock(id string) *sync.RWMutex {
-	lock, _ := m.hypervisorStateQueryLocks.LoadOrStore(id, &sync.RWMutex{})
-	return lock.(*sync.RWMutex)
+func (m *manager) hypervisorStateQueryLock(id string) *instanceStateQueryLock {
+	lock, _ := m.hypervisorStateQueryLocks.LoadOrStore(id, &instanceStateQueryLock{})
+	return lock.(*instanceStateQueryLock)
 }
 
-func (m *manager) tryLockHypervisorStateForStandby(id string) *sync.RWMutex {
+func (m *manager) tryLockHypervisorStateForStandby(id string) *instanceStateQueryLock {
 	lock := m.hypervisorStateQueryLock(id)
 	if !lock.TryLock() {
 		return nil
@@ -125,10 +137,28 @@ func (m *manager) loadCachedHypervisorState(id string) (hypervisor.VMState, bool
 // instance so subsequent derive_state calls within the TTL window avoid the
 // socket round-trip.
 func (m *manager) storeCachedHypervisorState(id string, state hypervisor.VMState) {
+	lock := m.hypervisorStateQueryLock(id)
+	lock.cacheMu.Lock()
+	lock.generation++
 	m.hypervisorStateCache.Store(id, hypervisorStateCacheEntry{
 		state:       state,
 		refreshedAt: m.nowUTC(),
 	})
+	lock.cacheMu.Unlock()
+}
+
+func (m *manager) storeQueriedHypervisorState(lock *instanceStateQueryLock, id string, state hypervisor.VMState, generation uint64) bool {
+	lock.cacheMu.Lock()
+	defer lock.cacheMu.Unlock()
+	if lock.generation != generation {
+		return false
+	}
+	lock.generation++
+	m.hypervisorStateCache.Store(id, hypervisorStateCacheEntry{
+		state:       state,
+		refreshedAt: m.nowUTC(),
+	})
+	return true
 }
 
 // invalidateCachedHypervisorState drops the cached hypervisor state for an
@@ -136,7 +166,11 @@ func (m *manager) storeCachedHypervisorState(id string, state hypervisor.VMState
 // (Stopped, Standby, Deleted) or transitions through a state where the cached
 // value would be stale.
 func (m *manager) invalidateCachedHypervisorState(id string) {
+	lock := m.hypervisorStateQueryLock(id)
+	lock.cacheMu.Lock()
+	lock.generation++
 	m.hypervisorStateCache.Delete(id)
+	lock.cacheMu.Unlock()
 }
 
 // updateCachedHypervisorStateFromInstance reconciles the hypervisor state

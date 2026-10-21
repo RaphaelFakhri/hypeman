@@ -698,6 +698,22 @@ func TestDeriveStateDoesNotStartProbeForCanceledContext(t *testing.T) {
 	assert.Zero(t, requests.Load())
 }
 
+func TestInvalidationPreventsStaleHypervisorQueryCacheWrite(t *testing.T) {
+	m := &manager{}
+	id := "vm-deleted"
+	m.storeCachedHypervisorState(id, hypervisor.StateRunning)
+	lock := m.hypervisorStateQueryLock(id)
+	lock.cacheMu.Lock()
+	generation := lock.generation
+	lock.cacheMu.Unlock()
+
+	m.invalidateCachedHypervisorState(id)
+
+	require.False(t, m.storeQueriedHypervisorState(lock, id, hypervisor.StateRunning, generation))
+	_, ok := m.loadCachedHypervisorState(id)
+	assert.False(t, ok)
+}
+
 func TestDeriveStateBoundsWaitForHypervisorQuery(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "firecracker.sock")
 	var requests atomic.Int32
