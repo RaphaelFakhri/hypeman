@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kernel/hypeman/lib/logger"
 )
@@ -118,6 +119,7 @@ func (m *manager) streamInstanceLogs(ctx context.Context, id string, tail int, f
 		defer cmd.Process.Kill()
 
 		scanner := bufio.NewScanner(stdout)
+		scanner.Split(scanLogLines)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if source == LogSourceApp && shouldSkipAppLogLine(line) {
@@ -140,6 +142,31 @@ func (m *manager) streamInstanceLogs(ctx context.Context, id string, tail int, f
 	}()
 
 	return out, nil
+}
+
+// maxLogLineBytes is the longest line streamed as a single entry. It matches
+// bufio.Scanner's default token limit.
+const maxLogLineBytes = bufio.MaxScanTokenSize
+
+// scanLogLines is bufio.ScanLines, except that a line longer than
+// maxLogLineBytes is returned in pieces instead of failing the scan with
+// bufio.ErrTooLong, which would end the stream. Pieces do not split a UTF-8
+// sequence.
+func scanLogLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	advance, token, err = bufio.ScanLines(data, atEOF)
+	if advance > 0 || token != nil || err != nil || len(data) < maxLogLineBytes {
+		return advance, token, err
+	}
+	n := maxLogLineBytes
+	for i := n - 1; i >= 0 && i > n-utf8.UTFMax; i-- {
+		if utf8.RuneStart(data[i]) {
+			if !utf8.FullRune(data[i:n]) {
+				n = i
+			}
+			break
+		}
+	}
+	return n, data[:n], nil
 }
 
 // rotateLogIfNeeded performs copytruncate rotation if file exceeds maxBytes
