@@ -119,6 +119,7 @@ func (m *manager) streamInstanceLogs(ctx context.Context, id string, tail int, f
 		defer cmd.Process.Kill()
 
 		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(nil, logScanBufferBytes)
 		scanner.Split(scanLogLines)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -148,13 +149,18 @@ func (m *manager) streamInstanceLogs(ctx context.Context, id string, tail int, f
 // bufio.Scanner's default token limit.
 const maxLogLineBytes = bufio.MaxScanTokenSize
 
+// logScanBufferBytes leaves room after a maxLogLineBytes line for its "\r\n",
+// so a line of exactly that length is returned whole rather than as a piece
+// followed by an empty line.
+const logScanBufferBytes = maxLogLineBytes + len("\r\n")
+
 // scanLogLines is bufio.ScanLines, except that a line longer than
 // maxLogLineBytes is returned in pieces instead of failing the scan with
 // bufio.ErrTooLong, which would end the stream. Pieces do not split a UTF-8
 // sequence.
 func scanLogLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	advance, token, err = bufio.ScanLines(data, atEOF)
-	if advance > 0 || token != nil || err != nil || len(data) < maxLogLineBytes {
+	if advance > 0 || token != nil || err != nil || len(data) < logScanBufferBytes {
 		return advance, token, err
 	}
 	n := maxLogLineBytes

@@ -45,3 +45,33 @@ func TestStreamInstanceLogsLongLine(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamInstanceLogsExactSizeLine(t *testing.T) {
+	p := paths.New(t.TempDir())
+	m := &manager{paths: p}
+	require.NoError(t, m.ensureDirectories("exact-line"))
+	require.NoError(t, m.saveMetadata(&metadata{StoredMetadata: StoredMetadata{Id: "exact-line", DataDir: p.InstanceDir("exact-line")}}))
+
+	exactLine := strings.Repeat("x", maxLogLineBytes)
+	content := "before\n" + exactLine + "\r\n" + exactLine + exactLine + "\nafter\n"
+	require.NoError(t, os.WriteFile(p.InstanceAppLog("exact-line"), []byte(content), 0644))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	logs, err := m.streamInstanceLogs(ctx, "exact-line", 10, false, LogSourceApp)
+	require.NoError(t, err)
+
+	var lines []string
+	for {
+		select {
+		case line, ok := <-logs:
+			if !ok {
+				require.Equal(t, []string{"before", exactLine, exactLine, exactLine, "after"}, lines)
+				return
+			}
+			lines = append(lines, line)
+		case <-ctx.Done():
+			t.Fatalf("log stream did not finish; received %d lines", len(lines))
+		}
+	}
+}
